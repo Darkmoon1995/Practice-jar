@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "google-labs-jules[bot]"
+ <161369871+google-labs-jules[bot]@users.noreply.github.com>
+Date: Sun, 6 Sep 2026 08:27:29 +0000
+Subject: [PATCH] Add minimalMode config and implementation
+
+
+diff --git a/src/main/java/io/papermc/paper/configuration/WorldConfiguration.java b/src/main/java/io/papermc/paper/configuration/WorldConfiguration.java
+index 76d4b3ecec1e380207918988d32f828327ba5751..e8462ee2c00625b2fb7307a90616f2aa6c4966c4 100644
+--- a/src/main/java/io/papermc/paper/configuration/WorldConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/WorldConfiguration.java
+@@ -72,6 +72,8 @@ public class WorldConfiguration extends ConfigurationPart {
+     private static final Logger LOGGER = LogUtils.getClassLogger();
+     static final int CURRENT_VERSION = 31; // (when you change the version, change the comment, so it conflicts on rebases): migrate spawn loaded configs to gamerule
+
++    public boolean minimalMode = false;
++
+     private final transient SpigotWorldConfig spigotConfig;
+     private final transient Identifier worldKey;
+
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftWorld.java b/src/main/java/org/bukkit/craftbukkit/CraftWorld.java
+index f77cb6d85c8947a96d41b96b31814c551dfd5258..264e787408e2209c0a6f0c7478f02e1fa5130fa1 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftWorld.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftWorld.java
+@@ -192,6 +192,11 @@ public class CraftWorld extends CraftRegionAccessor implements World {
+     private float voidDamageAmount;
+     private double voidDamageMinBuildHeightOffset;
+
++    @Override
++    public boolean isMinimalMode() {
++        return this.world.isMinimalMode();
++    }
++
+     @Override
+     public boolean isVoidDamageEnabled() {
+         return this.voidDamageEnabled;
