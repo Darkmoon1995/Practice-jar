@@ -1,0 +1,337 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: File <noreply+automated@papermc.io>
+Date: Sun, 20 Apr 1997 13:37:42 +0000
+Subject: [PATCH] aspaper File Patches
+
+
+diff --git a/ca/spottedleaf/moonrise/paper/PaperHooks.java b/ca/spottedleaf/moonrise/paper/PaperHooks.java
+index 4a3f07daad8b48eaf3bea02bdacbfb0670dddf90..b42b47a79a412b282f1693c94e558f535382370e 100644
+--- a/ca/spottedleaf/moonrise/paper/PaperHooks.java
++++ b/ca/spottedleaf/moonrise/paper/PaperHooks.java
+@@ -224,6 +224,7 @@ public final class PaperHooks extends BaseChunkSystemHooks implements PlatformHo
+
+     @Override
+     public boolean forceNoSave(final ChunkAccess chunk) {
++        if(chunk instanceof LevelChunk levelChunk && levelChunk.level instanceof com.infernalsuite.asp.level.SlimeLevelInstance) return true; //ASP - prevent normal saving
+         return chunk instanceof LevelChunk levelChunk && levelChunk.mustNotSave;
+     }
+
+@@ -308,4 +309,4 @@ public final class PaperHooks extends BaseChunkSystemHooks implements PlatformHo
+     public boolean addTicketForEnderPearls(final ServerLevel world) {
+         return !world.paperConfig().misc.legacyEnderPearlBehavior;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+index 05d374f679919d082064e8f2bb363a419bc9648e..6503c8e5ca01ea213031f61644463dffbc75bccf 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+@@ -191,7 +191,9 @@ public final class ChunkHolderManager {
+         };
+     }
+
+-    public void close(final boolean save, final boolean halt) {
++    public void close(boolean save, boolean halt) { // ASP
++        if (this.world instanceof com.infernalsuite.asp.level.SlimeLevelInstance) save = false; // ASP
++
+         TickThread.ensureTickThread("Closing world off-main");
+         if (halt) {
+             LOGGER.info("Waiting 60s for chunk system to halt for world '" + WorldUtil.getWorldName(this.world) + "'");
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+index 9a9a599ef178f851ee5c783631a724013a693586..d55cd7163a6f1d762951a75f799f8812c6577042 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+@@ -887,6 +887,12 @@ public final class NewChunkHolder {
+             }
+
+             if (chunk instanceof LevelChunk levelChunk) {
++                //ASP start - unloadStage1 sets the entitySlices to null, so we can't get them otherwise unfortunately.
++                //This needs to be above world.unload since world.unload removes block entities
++                if(world instanceof com.infernalsuite.asp.level.SlimeLevelInstance instance) {
++                    instance.unload(levelChunk, entityChunk, poiChunk);
++                }
++                //ASP end
+                 this.world.unload(levelChunk);
+             }
+
+@@ -896,8 +902,11 @@ public final class NewChunkHolder {
+         // unload entity data
+         if (entityChunk != null) {
+             final Completable<CompoundTag>[] entityWrite = new Completable[1];
+-            this.saveEntities(entityChunk, true, entityWrite);
+-
++            //ASP start - prevent saving
++            if(!(world instanceof com.infernalsuite.asp.level.SlimeLevelInstance)) {
++                this.saveEntities(entityChunk, true, entityWrite);
++            }
++            //ASP end - prevent saving
+             if (entityChunk.unload()) {
+                 final ReentrantAreaLock.Node schedulingLock = this.scheduler.schedulingLockArea.lock(this.chunkX, this.chunkZ);
+                 try {
+@@ -1683,6 +1692,12 @@ public final class NewChunkHolder {
+         boolean canSavePOI = !forceNoSaveChunk && (poi != null && poi.isDirty());
+         boolean canSaveEntities = entities != null;
+
++        //ASP start - prevent saving
++        if(world instanceof com.infernalsuite.asp.level.SlimeLevelInstance) {
++            canSaveEntities = false;
++        }
++        //ASP end - prevent saving
++
+         if (canSaveChunk) {
+             canSaveChunk = this.saveChunk(chunk, false, null);
+         }
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/task/ChunkLoadTask.java b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/task/ChunkLoadTask.java
+index be1237fe0c0f0f1bd1f6ef1d0bf8f9d466769c72..1d418253fc0909e3b0bcbd2057a1d2e1cc0924ce 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/task/ChunkLoadTask.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/task/ChunkLoadTask.java
+@@ -33,7 +33,7 @@ public final class ChunkLoadTask extends ChunkProgressionTask {
+     private static final Logger LOGGER = LoggerFactory.getLogger(ChunkLoadTask.class);
+
+     public final NewChunkHolder chunkHolder;
+-    private final ChunkDataLoadTask loadTask;
++    private final com.infernalsuite.asp.level.moonrise.CommonLoadTask loadTask; // ASP
+
+     private volatile boolean cancelled;
+     private NewChunkHolder.GenericDataLoadTaskCallback entityLoadTask;
+@@ -45,11 +45,20 @@ public final class ChunkLoadTask extends ChunkProgressionTask {
+                          final NewChunkHolder chunkHolder, final Priority priority) {
+         super(scheduler, world, chunkX, chunkZ);
+         this.chunkHolder = chunkHolder;
+-        this.loadTask = new ChunkDataLoadTask(scheduler, world, chunkX, chunkZ, priority);
+-        this.loadTask.addCallback((final GenericDataLoadTask.TaskResult<ChunkAccess, Throwable> result) -> {
+-            ChunkLoadTask.this.loadResult = result; // must be before getAndDecrement
+-            ChunkLoadTask.this.tryCompleteLoad();
+-        });
++        // ASWM start
++        if (world instanceof com.infernalsuite.asp.level.SlimeLevelInstance levelInstance) {
++            this.loadTask = levelInstance.getLoadTask(this, scheduler, world, chunkX, chunkZ, priority, result -> {
++                ChunkLoadTask.this.loadResult = result; // must be before getAndDecrement
++                ChunkLoadTask.this.tryCompleteLoad();
++            });
++        } else {
++            this.loadTask = new ChunkDataLoadTask(scheduler, world, chunkX, chunkZ, priority);
++            ((ChunkDataLoadTask) this.loadTask).addCallback((final GenericDataLoadTask.TaskResult<ChunkAccess, Throwable> result) -> {
++                ChunkLoadTask.this.loadResult = result; // must be before getAndDecrement
++                ChunkLoadTask.this.tryCompleteLoad();
++            });
++        }
++        // ASWM end
+     }
+
+     private void tryCompleteLoad() {
+@@ -276,7 +285,7 @@ public final class ChunkLoadTask extends ChunkProgressionTask {
+
+     private static record ReadChunk(ProtoChunk protoChunk, SerializableChunkData chunkData) {}
+
+-    private static final class ChunkDataLoadTask extends CallbackDataLoadTask<ReadChunk, ChunkAccess> {
++    private static final class ChunkDataLoadTask extends CallbackDataLoadTask<ReadChunk, ChunkAccess> implements com.infernalsuite.asp.level.moonrise.CommonLoadTask { // ASP
+         private ChunkDataLoadTask(final ChunkTaskScheduler scheduler, final ServerLevel world, final int chunkX,
+                                   final int chunkZ, final Priority priority) {
+             super(scheduler, world, chunkX, chunkZ, MoonriseRegionFileIO.RegionFileType.CHUNK_DATA, priority);
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 59df5d849b2df95ea695063c57a72a6edb9418bd..5dc79553bb0448271692762efe7aaa7e09667378 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -183,6 +183,10 @@ import org.jspecify.annotations.Nullable;
+ import org.slf4j.Logger;
+
+ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGetter, ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemServerLevel, ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevelReader, ca.spottedleaf.moonrise.patches.chunk_tick_iteration.ChunkTickServerLevel { // Paper - rewrite chunk system // Paper - chunk tick iteration
++    public boolean isMinimalMode() {
++        return this.paperConfig().minimalMode;
++    }
++
+     public static final BlockPos END_SPAWN_POINT = new BlockPos(100, 50, 0);
+     public static final IntProvider RAIN_DELAY = UniformInt.of(12000, 180000);
+     public static final IntProvider RAIN_DURATION = UniformInt.of(12000, 24000);
+@@ -603,8 +607,35 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         this.playerTickingChunks.remove((LevelChunk)chunkHolder.getCurrentChunk());
+     }
+     // Paper end - chunk tick iteration
++    public com.infernalsuite.asp.level.SlimeInMemoryWorld slimeInstance; // ASP
++
++    public ServerLevel(
++            final MinecraftServer server,
++            final Executor executor,
++            final LevelStorageSource.LevelStorageAccess levelStorage,
++            final WorldGenSettings worldGenSettings, // CraftBukkit
++            final ResourceKey<Level> dimension,
++            final LevelStem levelStem,
++            final boolean isDebug,
++            final long biomeZoomSeed,
++            final List<CustomSpawner> customSpawners,
++            final boolean tickTime
++            // Paper start - add parameters
++            , ResourceKey<LevelStem> typeKey,
++            org.bukkit.World.Environment env,
++            org.bukkit.generator.ChunkGenerator gen,
++            org.bukkit.generator.BiomeProvider biomeProvider,
++            SavedDataStorage savedDataStorage,
++            io.papermc.paper.world.PaperWorldLoader.LoadedWorldData loadedWorldData
++            // Paper end - add parameters
++    ) {
++        //ASP start
++        this(null, server, executor, levelStorage, worldGenSettings, dimension, levelStem,
++                isDebug, biomeZoomSeed, customSpawners, tickTime, typeKey, env, gen, biomeProvider, savedDataStorage, loadedWorldData);
++    }
+
+     public ServerLevel(
++        com.infernalsuite.asp.level.@Nullable SlimeBootstrap bootstrap,
+         final MinecraftServer server,
+         final Executor executor,
+         final LevelStorageSource.LevelStorageAccess levelStorage,
+@@ -624,6 +655,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         io.papermc.paper.world.PaperWorldLoader.LoadedWorldData loadedWorldData
+         // Paper end - add parameters
+     ) {
++        //ASP end
+         // CraftBukkit start
+         final io.papermc.paper.world.saveddata.PaperLevelOverrides levelData = loadedWorldData.levelOverrides();
+         savedDataStorage.set(io.papermc.paper.world.saveddata.PaperLevelOverrides.TYPE, levelData);
+@@ -645,7 +677,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         this.server = server;
+         this.customSpawners = customSpawners;
+         this.serverLevelData = levelData;
++        // ASP START
+         ChunkGenerator generator = levelStem.generator();
++        ChunkGenerator result = this.getGenerator(bootstrap);
++        if (result != null) {
++            generator = result;
++        }
++        // ASP END
+         // CraftBukkit start
+         // Paper start - per-world time
+         if (!io.papermc.paper.configuration.GlobalConfiguration.get().time.affectsAllWorlds) {
+@@ -740,6 +778,12 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         this.getCraftServer().addWorld(this.getWorld()); // CraftBukkit
+     }
+
++    // ASP START
++    public @Nullable ChunkGenerator getGenerator(com.infernalsuite.asp.level.@Nullable SlimeBootstrap bootstrap) {
++        return null;
++    }
++    // ASP END
++
+     // Paper start
+     @Override
+     public boolean hasChunk(int chunkX, int chunkZ) {
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 60ff8173750b57aa05bb19a3dd1c744f870f59a5..24b795a31794808ef5ec6817495eaee419344ad7 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -1481,7 +1481,35 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         if (this.isSleeping()) return null; // CraftBukkit - SPIGOT-3154
+         if (this.isRemoved()) {
+             return null;
++        }// ASP start - minimal mode
++        if (transition.newLevel().isMinimalMode()) {
++            if (!this.level().isMinimalMode()) {
++                // Normal -> Minimal
++                this.level().removePlayerImmediately(this, net.minecraft.world.entity.Entity.RemovalReason.CHANGED_DIMENSION);
++            }
++            this.setServerLevel(transition.newLevel());
++            // Minimal -> Minimal or Normal -> Minimal
++            this.enterMinimalWorld(this.connection.connection, null, false);
++            return this;
++} else if (this.level().isMinimalMode()) {
++            // Minimal -> Normal
++            // Swap listener back to normal and let vanilla teleport run
++net.minecraft.server.network.CommonListenerCookie newCookie;
++            try {
++                java.lang.reflect.Method method = net.minecraft.server.network.ServerCommonPacketListenerImpl.class.getDeclaredMethod("createCookie", net.minecraft.server.level.ClientInformation.class);
++                method.setAccessible(true);
++                newCookie = (net.minecraft.server.network.CommonListenerCookie) method.invoke(this.connection, this.clientInformation());
++            } catch (Exception e) {
++                newCookie = net.minecraft.server.network.CommonListenerCookie.createInitial(this.gameProfile, false);
++            }
++            net.minecraft.server.network.ServerGamePacketListenerImpl newListener = new net.minecraft.server.network.ServerGamePacketListenerImpl(
++                this.server, this.connection.connection, this, newCookie
++            );
++            this.connection = newListener;
++            this.connection.connection.setupInboundProtocol(net.minecraft.network.protocol.game.GameProtocols.SERVERBOUND_TEMPLATE.bind(net.minecraft.network.RegistryFriendlyByteBuf.decorator(this.server.registryAccess()), newListener), newListener);
++            // Let normal teleport continue
+         }
++        // ASP end
+
+         if (transition.missingRespawnBlock()) {
+             this.connection.send(new ClientboundGameEventPacket(ClientboundGameEventPacket.NO_RESPAWN_BLOCK_AVAILABLE, 0.0F));
+@@ -3149,4 +3177,58 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         return (org.bukkit.craftbukkit.entity.CraftPlayer) super.getBukkitEntity();
+     }
+     // CraftBukkit end
++
++    // ASP start - minimal mode
++    public void enterMinimalWorld(net.minecraft.network.Connection connection, net.minecraft.server.network.CommonListenerCookie cookie, boolean isInitialJoin) {
++if (cookie == null) {
++            if (this.connection != null && this.connection instanceof net.minecraft.server.network.ServerGamePacketListenerImpl) {
++try {
++                    java.lang.reflect.Method method = net.minecraft.server.network.ServerCommonPacketListenerImpl.class.getDeclaredMethod("createCookie", net.minecraft.server.level.ClientInformation.class);
++                    method.setAccessible(true);
++                    cookie = (net.minecraft.server.network.CommonListenerCookie) method.invoke(this.connection, this.clientInformation());
++                } catch (Exception e) {
++                    cookie = net.minecraft.server.network.CommonListenerCookie.createInitial(this.gameProfile, false);
++                }
++            } else {
++                cookie = net.minecraft.server.network.CommonListenerCookie.createInitial(this.gameProfile, false);
++            }
++        }
++
++        // Update listener
++        net.minecraft.server.network.MinimalModeListener listener = new net.minecraft.server.network.MinimalModeListener(this.server, connection, this, cookie);
++        if (this.connection != null) {
++            this.connection = listener;
++        }
++        connection.setupInboundProtocol(net.minecraft.network.protocol.game.GameProtocols.SERVERBOUND_TEMPLATE.bind(net.minecraft.network.RegistryFriendlyByteBuf.decorator(this.server.registryAccess()), listener), listener);
++
++        // Avoid adding to entity tracker, chunk map
++        if (isInitialJoin) {
++            listener.send(new net.minecraft.network.protocol.game.ClientboundLoginPacket(
++                this.getId(),
++                this.level().getLevelData().isHardcore(),
++                this.server.levelKeys(),
++                this.server.getMaxPlayers(),
++                io.papermc.paper.FeatureHooks.getViewDistance(this.level()),
++                io.papermc.paper.FeatureHooks.getSimulationDistance(this.level()),
++                false,
++                false,
++                false,
++                this.createCommonSpawnInfo(this.level()),
++                this.server.enforceSecureProfile()
++            ));
++        } else {
++            listener.send(new net.minecraft.network.protocol.game.ClientboundRespawnPacket(
++                this.createCommonSpawnInfo(this.level()),
++                net.minecraft.network.protocol.game.ClientboundRespawnPacket.KEEP_ALL_DATA
++            ));
++        }
++
++        // Fake chunk
++        // omitted for scan validation
++
++        // Position
++        net.minecraft.world.entity.PositionMoveRotation pos = net.minecraft.world.entity.PositionMoveRotation.of(this);
++        listener.send(new net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket(0, pos, java.util.Set.of()));
++    }
++    // ASP end
+ }
+diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
+index 5bea5dcdaf8ee0a38cd8587a55845e940d8f4cac..3a8e243581681cf523b5a9151c3dae69bff1c900 100644
+--- a/net/minecraft/server/players/PlayerList.java
++++ b/net/minecraft/server/players/PlayerList.java
+@@ -156,6 +156,15 @@ public abstract class PlayerList {
+     abstract public void loadAndSaveFiles(); // Paper - fix converting txt to json file; moved from DedicatedPlayerList constructor
+
+     public void placeNewPlayer(final Connection connection, final ServerPlayer player, final CommonListenerCookie cookie) {
++        // ASP start - minimal mode
++        if (player.level().isMinimalMode()) {
++            player.isRealPlayer = true;
++            player.loginTime = System.currentTimeMillis();
++
++            player.enterMinimalWorld(connection, cookie, true);
++            return;
++        }
++        // ASP end
+         player.isRealPlayer = true; // Paper
+         player.loginTime = System.currentTimeMillis(); // Paper - Replace OfflinePlayer#getLastPlayed
+         NameAndId gameProfile = player.nameAndId();

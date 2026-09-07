@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "google-labs-jules[bot]"
+ <161369871+google-labs-jules[bot]@users.noreply.github.com>
+Date: Sun, 6 Sep 2026 08:26:47 +0000
+Subject: [PATCH] Add isMinimalMode
+
+
+diff --git a/src/main/java/org/bukkit/World.java b/src/main/java/org/bukkit/World.java
+index ace05559319506ab1f20dee8b4050cd797ca695b..a2b9055dffa516f2e9ba910eb7721035c4f79883 100644
+--- a/src/main/java/org/bukkit/World.java
++++ b/src/main/java/org/bukkit/World.java
+@@ -55,6 +55,15 @@ import org.jetbrains.annotations.Nullable;
+  * Represents a world, which may contain entities, chunks and blocks
+  */
+ public interface World extends RegionAccessor, WorldInfo, PluginMessageRecipient, Metadatable, PersistentDataHolder, Keyed, net.kyori.adventure.audience.ForwardingAudience { // Paper
++
++    // ASP start - minimal mode
++    /**
++     * Checks if minimal mode is enabled on this world.
++     *
++     * @return true if minimal mode is enabled
++     */
++    default boolean isMinimalMode() { return false; }
++    // ASP end
+
+     // Paper start - void damage configuration
+     /**

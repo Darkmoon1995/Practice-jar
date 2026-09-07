@@ -119,7 +119,8 @@ public class InternalPlugin extends PluginBase {
 
     @Override
     public void onEnable() {
-        throw new UnsupportedOperationException("Not supported.");
+        // We do not throw UnsupportedOperationException because we need to register events here.
+        com.infernalsuite.asp.minimal.MinimalVisibilityHandler.init();
     }
 
     @Override

@@ -5,10 +5,10 @@ Subject: [PATCH] Prevent config disk io on world load
 
 
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index b59f29850d3ef1840b740cfc3b2f254686620cb9..54cdc9c357c446b530c2ae757f1243d1912d02a0 100644
+index be9c25851c5e342e3468a23c200ac1bab9ddb978..aff5850f1cf89f5c662a6fa41d9c34e078a4bd26 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -660,7 +660,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -664,7 +664,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
          savedDataStorage.set(io.papermc.paper.world.saveddata.PaperWorldPDC.TYPE, loadedWorldData.pdc() == null ? io.papermc.paper.world.saveddata.PaperWorldPDC.TYPE.constructor().get() : loadedWorldData.pdc());
          final GameRules gameRules = new GameRules(server.getWorldData().enabledFeatures(), savedDataStorage.computeIfAbsent(net.minecraft.world.level.gamerules.GameRuleMap.TYPE));
          this.gameRules = gameRules;
