@@ -1,0 +1,1060 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Sun, 8 Nov 2026 19:51:03 +0330
+Subject: [PATCH] Always full bright lighting
+
+
+diff --git a/ca/spottedleaf/moonrise/patches/starlight/light/SWMRNibbleArray.java b/ca/spottedleaf/moonrise/patches/starlight/light/SWMRNibbleArray.java
+index 240416aba0ad4649e1db401aff2565f972f5ca11..9cec6ac3553cc8cfec734bc7d3884950c7f85433 100644
+--- a/ca/spottedleaf/moonrise/patches/starlight/light/SWMRNibbleArray.java
++++ b/ca/spottedleaf/moonrise/patches/starlight/light/SWMRNibbleArray.java
+@@ -1,41 +1,25 @@
+ package ca.spottedleaf.moonrise.patches.starlight.light;
+ 
+ import net.minecraft.world.level.chunk.DataLayer;
+-import java.lang.invoke.MethodHandles;
+-import java.lang.invoke.VarHandle;
+-import java.nio.ByteOrder;
+ import java.util.ArrayDeque;
+ import java.util.Arrays;
+ 
+-// SWMR -> Single Writer Multi Reader Nibble Array
++// SWMR -> Single Writer Multi Reader Nibble Array (Modified for Constant Full-Bright)
+ public final class SWMRNibbleArray {
+ 
+-    /*
+-     * Null nibble - nibble does not exist, and should not be written to. Just like vanilla - null
+-     * nibbles are always 0 - and they are never written to directly. Only initialised/uninitialised
+-     * nibbles can be written to.
+-     *
+-     * Uninitialised nibble - They are all 0, but the backing array isn't initialised.
+-     *
+-     * Initialised nibble - Has light data.
+-     */
+-
+-    private static final int INIT_STATE_NULL   = 0; // null
+-    private static final int INIT_STATE_UNINIT = 1; // uninitialised
+-    private static final int INIT_STATE_INIT   = 2; // initialised
+-    private static final int INIT_STATE_HIDDEN = 3; // initialised, but conversion to Vanilla data should be treated as if NULL
+-
++    private static final int INIT_STATE_INIT = 2;
+     public static final int ARRAY_SIZE = 16 * 16 * 16 / (8/4); // blocks / bytes per block
+-    // this allows us to maintain only 1 byte array when we're not updating
+     private static final ThreadLocal<ArrayDeque<byte[]>> WORKING_BYTES_POOL = ThreadLocal.withInitial(ArrayDeque::new);
+ 
+     private static byte[] allocateBytes() {
+         final byte[] inPool = WORKING_BYTES_POOL.get().pollFirst();
+         if (inPool != null) {
++            Arrays.fill(inPool, (byte)-1); // (byte)-1 is 0xFF, which fills both 4-bit nibbles with 15
+             return inPool;
+         }
+-
+-        return new byte[ARRAY_SIZE];
++        byte[] bytes = new byte[ARRAY_SIZE];
++        Arrays.fill(bytes, (byte)-1);
++        return bytes;
+     }
+ 
+     private static void freeBytes(final byte[] bytes) {
+@@ -43,24 +27,17 @@ public final class SWMRNibbleArray {
+     }
+ 
+     public static SWMRNibbleArray fromVanilla(final DataLayer nibble) {
+-        if (nibble == null) {
+-            return new SWMRNibbleArray(null, true);
+-        } else if (nibble.isEmpty()) {
+-            return new SWMRNibbleArray();
+-        } else {
+-            return new SWMRNibbleArray(nibble.getData().clone()); // make sure we don't write to the parameter later
+-        }
++        return new SWMRNibbleArray(); // Ignore external data, force full-bright
+     }
+ 
+     private int stateUpdating;
+     private volatile int stateVisible;
+-
+     private byte[] storageUpdating;
+-    private boolean updatingDirty; // only returns whether storageUpdating is dirty
++    private boolean updatingDirty;
+     private volatile byte[] storageVisible;
+ 
+     public SWMRNibbleArray() {
+-        this(null, false); // lazy init
++        this(null, false);
+     }
+ 
+     public SWMRNibbleArray(final byte[] bytes) {
+@@ -68,372 +45,132 @@ public final class SWMRNibbleArray {
+     }
+ 
+     public SWMRNibbleArray(final byte[] bytes, final boolean isNullNibble) {
+-        if (bytes != null && bytes.length != ARRAY_SIZE) {
+-            throw new IllegalArgumentException("Data of wrong length: " + bytes.length);
+-        }
+-        this.stateVisible = this.stateUpdating = bytes == null ? (isNullNibble ? INIT_STATE_NULL : INIT_STATE_UNINIT) : INIT_STATE_INIT;
+-        this.storageUpdating = this.storageVisible = bytes;
++        byte[] data = allocateBytes();
++        this.stateVisible = this.stateUpdating = INIT_STATE_INIT;
++        this.storageUpdating = this.storageVisible = data;
++        this.updatingDirty = true;
+     }
+ 
+     public SWMRNibbleArray(final byte[] bytes, final int state) {
+-        if (bytes != null && bytes.length != ARRAY_SIZE) {
+-            throw new IllegalArgumentException("Data of wrong length: " + bytes.length);
+-        }
+-        if (bytes == null && (state == INIT_STATE_INIT || state == INIT_STATE_HIDDEN)) {
+-            throw new IllegalArgumentException("Data cannot be null and have state be initialised");
+-        }
+-        this.stateUpdating = this.stateVisible = state;
+-        this.storageUpdating = this.storageVisible = bytes;
++        byte[] data = allocateBytes();
++        this.stateVisible = this.stateUpdating = INIT_STATE_INIT;
++        this.storageUpdating = this.storageVisible = data;
++        this.updatingDirty = true;
+     }
+ 
+     @Override
+     public String toString() {
+-        StringBuilder stringBuilder = new StringBuilder();
+-        stringBuilder.append("State: ");
+-        switch (this.stateVisible) {
+-            case INIT_STATE_NULL:
+-                stringBuilder.append("null");
+-                break;
+-            case INIT_STATE_UNINIT:
+-                stringBuilder.append("uninitialised");
+-                break;
+-            case INIT_STATE_INIT:
+-                stringBuilder.append("initialised");
+-                break;
+-            case INIT_STATE_HIDDEN:
+-                stringBuilder.append("hidden");
+-                break;
+-            default:
+-                stringBuilder.append("unknown");
+-                break;
+-        }
+-        stringBuilder.append("\nData:\n");
+-
+-        final byte[] data = this.storageVisible;
+-        if (data != null) {
+-            for (int i = 0; i < 4096; ++i) {
+-                // Copied from NibbleArray#toString
+-                final int level = ((data[i >>> 1] >>> ((i & 1) << 2)) & 0xF);
+-
+-                stringBuilder.append(Integer.toHexString(level));
+-                if ((i & 15) == 15) {
+-                    stringBuilder.append("\n");
+-                }
+-
+-                if ((i & 255) == 255) {
+-                    stringBuilder.append("\n");
+-                }
+-            }
+-        } else {
+-            stringBuilder.append("null");
+-        }
+-
+-        return stringBuilder.toString();
++        return "State: Always Full Bright (15)\n";
+     }
+ 
+     public SaveState getSaveState() {
+-        return this.getSaveState(true);
++        return new SaveState(allocateBytes(), INIT_STATE_INIT);
+     }
+ 
+     public SaveState getSaveState(final boolean copy) {
+-        synchronized (this) {
+-            final int state = this.stateVisible;
+-            final byte[] data = this.storageVisible;
+-            if (state == INIT_STATE_NULL) {
+-                return null;
+-            }
+-            if (state == INIT_STATE_UNINIT) {
+-                return new SaveState(null, state);
+-            }
+-            final boolean zero = isAllZero(data);
+-            if (zero) {
+-                return state == INIT_STATE_INIT ? new SaveState(null, INIT_STATE_UNINIT) : null;
+-            } else {
+-                return new SaveState(copy ? data.clone() : data, state);
+-            }
+-        }
++        return this.getSaveState();
+     }
+ 
+-    private static final VarHandle LONG_VIEW = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.nativeOrder());
+-
+-    private static boolean isAllZero(final byte[] data) {
+-        final int len = data.length / Long.BYTES; // assume divisible
+-
+-        for (int i = 0; i < len; ++i) {
+-            if (0L != (long)LONG_VIEW.get(data, i << 3)) {
+-                return false;
+-            }
+-        }
+-
+-        return true;
+-    }
+-
+-    // operation type: updating on src, updating on other
+     public void extrudeLower(final SWMRNibbleArray other) {
+-        if (other.stateUpdating == INIT_STATE_NULL) {
+-            throw new IllegalArgumentException();
+-        }
+-
+-        if (other.storageUpdating == null) {
+-            this.setUninitialised();
+-            return;
+-        }
+-
+-        final byte[] src = other.storageUpdating;
+-        final byte[] into;
+-
+-        if (!this.updatingDirty) {
+-            if (this.storageUpdating != null) {
+-                into = this.storageUpdating = allocateBytes();
+-            } else {
+-                this.storageUpdating = into = allocateBytes();
+-                this.stateUpdating = INIT_STATE_INIT;
+-            }
+-            this.updatingDirty = true;
+-        } else {
+-            into = this.storageUpdating;
+-        }
+-
+-        final int start = 0;
+-        final int end = (15 | (15 << 4)) >>> 1;
+-
+-        /* x | (z << 4) | (y << 8) */
+-        for (int y = 0; y <= 15; ++y) {
+-            System.arraycopy(src, start, into, y << (8 - 1), end - start + 1);
+-        }
++        this.setFull();
+     }
+ 
+-    // operation type: updating
+     public void setFull() {
+-        if (this.stateUpdating != INIT_STATE_HIDDEN) {
+-            this.stateUpdating = INIT_STATE_INIT;
++        this.stateUpdating = INIT_STATE_INIT;
++        if (this.storageUpdating == null) {
++            this.storageUpdating = allocateBytes();
+         }
+-        Arrays.fill(this.storageUpdating == null || !this.updatingDirty ? this.storageUpdating = allocateBytes() : this.storageUpdating, (byte)-1);
++        Arrays.fill(this.storageUpdating, (byte)-1);
+         this.updatingDirty = true;
+     }
+ 
+-    // operation type: updating
+     public void setZero() {
+-        if (this.stateUpdating != INIT_STATE_HIDDEN) {
+-            this.stateUpdating = INIT_STATE_INIT;
+-        }
+-        Arrays.fill(this.storageUpdating == null || !this.updatingDirty ? this.storageUpdating = allocateBytes() : this.storageUpdating, (byte)0);
+-        this.updatingDirty = true;
++        this.setFull(); // Intercept zeroing, keep full bright
+     }
+ 
+-    // operation type: updating
+     public void setNonNull() {
+-        if (this.stateUpdating == INIT_STATE_HIDDEN) {
+-            this.stateUpdating = INIT_STATE_INIT;
+-            return;
+-        }
+-        if (this.stateUpdating != INIT_STATE_NULL) {
+-            return;
+-        }
+-        this.stateUpdating = INIT_STATE_UNINIT;
++        this.setFull();
+     }
+ 
+-    // operation type: updating
+     public void setNull() {
+-        this.stateUpdating = INIT_STATE_NULL;
+-        if (this.updatingDirty && this.storageUpdating != null) {
+-            freeBytes(this.storageUpdating);
+-        }
+-        this.storageUpdating = null;
+-        this.updatingDirty = false;
++        this.setFull();
+     }
+ 
+-    // operation type: updating
+     public void setUninitialised() {
+-        this.stateUpdating = INIT_STATE_UNINIT;
+-        if (this.storageUpdating != null && this.updatingDirty) {
+-            freeBytes(this.storageUpdating);
+-        }
+-        this.storageUpdating = null;
+-        this.updatingDirty = false;
++        this.setFull();
+     }
+ 
+-    // operation type: updating
+     public void setHidden() {
+-        if (this.stateUpdating == INIT_STATE_HIDDEN) {
+-            return;
+-        }
+-        if (this.stateUpdating != INIT_STATE_INIT) {
+-            this.setNull();
+-        } else {
+-            this.stateUpdating = INIT_STATE_HIDDEN;
+-        }
++        this.setFull();
+     }
+ 
+-    // operation type: updating
+     public boolean isDirty() {
+         return this.stateUpdating != this.stateVisible || this.updatingDirty;
+     }
+ 
+-    // operation type: updating
+-    public boolean isNullNibbleUpdating() {
+-        return this.stateUpdating == INIT_STATE_NULL;
+-    }
+-
+-    // operation type: visible
+-    public boolean isNullNibbleVisible() {
+-        return this.stateVisible == INIT_STATE_NULL;
+-    }
+-
+-    // opeartion type: updating
+-    public boolean isUninitialisedUpdating() {
+-        return this.stateUpdating == INIT_STATE_UNINIT;
+-    }
+-
+-    // operation type: visible
+-    public boolean isUninitialisedVisible() {
+-        return this.stateVisible == INIT_STATE_UNINIT;
+-    }
+-
+-    // operation type: updating
+-    public boolean isInitialisedUpdating() {
+-        return this.stateUpdating == INIT_STATE_INIT;
+-    }
+-
+-    // operation type: visible
+-    public boolean isInitialisedVisible() {
+-        return this.stateVisible == INIT_STATE_INIT;
+-    }
+-
+-    // operation type: updating
+-    public boolean isHiddenUpdating() {
+-        return this.stateUpdating == INIT_STATE_HIDDEN;
+-    }
+-
+-    // operation type: updating
+-    public boolean isHiddenVisible() {
+-        return this.stateVisible == INIT_STATE_HIDDEN;
+-    }
++    public boolean isNullNibbleUpdating() { return false; }
++    public boolean isNullNibbleVisible() { return false; }
++    public boolean isUninitialisedUpdating() { return false; }
++    public boolean isUninitialisedVisible() { return false; }
++    public boolean isInitialisedUpdating() { return true; }
++    public boolean isInitialisedVisible() { return true; }
++    public boolean isHiddenUpdating() { return false; }
++    public boolean isHiddenVisible() { return false; }
+ 
+-    // operation type: updating
+     private void swapUpdatingAndMarkDirty() {
+         if (this.updatingDirty) {
+             return;
+         }
+-
+         if (this.storageUpdating == null) {
+             this.storageUpdating = allocateBytes();
+-            Arrays.fill(this.storageUpdating, (byte)0);
+-        } else {
+-            System.arraycopy(this.storageUpdating, 0, this.storageUpdating = allocateBytes(), 0, ARRAY_SIZE);
+-        }
+-
+-        if (this.stateUpdating != INIT_STATE_HIDDEN) {
+-            this.stateUpdating = INIT_STATE_INIT;
+         }
++        this.stateUpdating = INIT_STATE_INIT;
+         this.updatingDirty = true;
+     }
+ 
+-    // operation type: updating
+     public boolean updateVisible() {
+         if (!this.isDirty()) {
+             return false;
+         }
+-
+         synchronized (this) {
+-            if (this.stateUpdating == INIT_STATE_NULL || this.stateUpdating == INIT_STATE_UNINIT) {
+-                this.storageVisible = null;
+-            } else {
+-                if (this.storageVisible == null) {
+-                    this.storageVisible = this.storageUpdating.clone();
+-                } else {
+-                    if (this.storageUpdating != this.storageVisible) {
+-                        System.arraycopy(this.storageUpdating, 0, this.storageVisible, 0, ARRAY_SIZE);
+-                    }
+-                }
+-
+-                if (this.storageUpdating != this.storageVisible) {
+-                    freeBytes(this.storageUpdating);
+-                }
+-                this.storageUpdating = this.storageVisible;
++            if (this.storageUpdating == null) {
++                this.storageUpdating = allocateBytes();
++            }
++            if (this.storageVisible == null) {
++                this.storageVisible = this.storageUpdating.clone();
+             }
+             this.updatingDirty = false;
+-            this.stateVisible = this.stateUpdating;
++            this.stateVisible = INIT_STATE_INIT;
+         }
+-
+         return true;
+     }
+ 
+-    // operation type: visible
+     public DataLayer toVanillaNibble() {
+-        synchronized (this) {
+-            switch (this.stateVisible) {
+-                case INIT_STATE_HIDDEN:
+-                case INIT_STATE_NULL:
+-                    return null;
+-                case INIT_STATE_UNINIT:
+-                    return new DataLayer();
+-                case INIT_STATE_INIT:
+-                    return new DataLayer(this.storageVisible.clone());
+-                default:
+-                    throw new IllegalStateException();
+-            }
+-        }
++        byte[] data = new byte[ARRAY_SIZE];
++        Arrays.fill(data, (byte)-1);
++        return new DataLayer(data);
+     }
+ 
+-    /* x | (z << 4) | (y << 8) */
+-
+-    // operation type: updating
+     public int getUpdating(final int x, final int y, final int z) {
+-        return this.getUpdating((x & 15) | ((z & 15) << 4) | ((y & 15) << 8));
++        return 15;
+     }
+ 
+-    // operation type: updating
+     public int getUpdating(final int index) {
+-        // indices range from 0 -> 4096
+-        final byte[] bytes = this.storageUpdating;
+-        if (bytes == null) {
+-            return 0;
+-        }
+-        final byte value = bytes[index >>> 1];
+-
+-        // if we are an even index, we want lower 4 bits
+-        // if we are an odd index, we want upper 4 bits
+-        return ((value >>> ((index & 1) << 2)) & 0xF);
++        return 15;
+     }
+ 
+-    // operation type: visible
+     public int getVisible(final int x, final int y, final int z) {
+-        return this.getVisible((x & 15) | ((z & 15) << 4) | ((y & 15) << 8));
++        return 15;
+     }
+ 
+-    // operation type: visible
+     public int getVisible(final int index) {
+-        // indices range from 0 -> 4096
+-        final byte[] visibleBytes = this.storageVisible;
+-        if (visibleBytes == null) {
+-            return 0;
+-        }
+-        final byte value = visibleBytes[index >>> 1];
+-
+-        // if we are an even index, we want lower 4 bits
+-        // if we are an odd index, we want upper 4 bits
+-        return ((value >>> ((index & 1) << 2)) & 0xF);
+-    }
+-
+-    // operation type: updating
+-    public void set(final int x, final int y, final int z, final int value) {
+-        this.set((x & 15) | ((z & 15) << 4) | ((y & 15) << 8), value);
++        return 15;
+     }
+ 
+-    // operation type: updating
+-    public void set(final int index, final int value) {
+-        if (!this.updatingDirty) {
+-            this.swapUpdatingAndMarkDirty();
+-        }
+-        final int shift = (index & 1) << 2;
+-        final int i = index >>> 1;
+-
+-        this.storageUpdating[i] = (byte)((this.storageUpdating[i] & (0xF0 >>> shift)) | (value << shift));
+-    }
++    public void set(final int x, final int y, final int z, final int value) {}
++    public void set(final int index, final int value) {}
+ 
+     public static final class SaveState {
+-
+         public final byte[] data;
+         public final int state;
+ 
+@@ -442,4 +179,4 @@ public final class SWMRNibbleArray {
+             this.state = state;
+         }
+     }
+-}
++}
+\ No newline at end of file
+diff --git a/ca/spottedleaf/moonrise/patches/starlight/light/SkyStarLightEngine.java b/ca/spottedleaf/moonrise/patches/starlight/light/SkyStarLightEngine.java
+index d3d1831ff4fabd87d4b18da0b28a0d75d82dfbc7..b78f4ce3e0ee46ec11b5f286170b351f2c17e852 100644
+--- a/ca/spottedleaf/moonrise/patches/starlight/light/SkyStarLightEngine.java
++++ b/ca/spottedleaf/moonrise/patches/starlight/light/SkyStarLightEngine.java
+@@ -303,59 +303,7 @@ public final class SkyStarLightEngine extends StarLightEngine {
+     @Override
+     protected int calculateLightValue(final LightChunkGetter lightAccess, final int worldX, final int worldY, final int worldZ,
+                                       final int expect) {
+-        if (expect == 15) {
+-            return expect;
+-        }
+-
+-        final int sectionOffset = this.chunkSectionIndexOffset;
+-        final BlockState centerState = this.getBlockState(worldX, worldY, worldZ);
+-
+-        final BlockState conditionallyOpaqueState;
+-        final int opacity = Math.max(1, centerState.getLightDampening());
+-        if (((StarlightAbstractBlockState)centerState).starlight$isConditionallyFullOpaque()) {
+-            conditionallyOpaqueState = centerState;
+-        } else {
+-            conditionallyOpaqueState = null;
+-        }
+-
+-        int level = 0;
+-
+-        for (final AxisDirection direction : AXIS_DIRECTIONS) {
+-            final int offX = worldX + direction.x;
+-            final int offY = worldY + direction.y;
+-            final int offZ = worldZ + direction.z;
+-
+-            final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
+-
+-            final int neighbourLevel = this.getLightLevel(sectionIndex, (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8));
+-
+-            if ((neighbourLevel - 1) <= level) {
+-                // don't need to test transparency, we know it wont affect the result.
+-                continue;
+-            }
+-
+-            final BlockState neighbourState = this.getBlockState(offX, offY, offZ);
+-
+-            if (((StarlightAbstractBlockState)neighbourState).starlight$isConditionallyFullOpaque()) {
+-                // here the block can be conditionally opaque (i.e light cannot propagate from it), so we need to test that
+-                // we don't read the blockstate because most of the time this is false, so using the faster
+-                // known transparency lookup results in a net win
+-                final VoxelShape neighbourFace = neighbourState.getFaceOcclusionShape(direction.opposite.nms);
+-                final VoxelShape thisFace = conditionallyOpaqueState == null ? Shapes.empty() : conditionallyOpaqueState.getFaceOcclusionShape(direction.nms);
+-                if (Shapes.faceShapeOccludes(thisFace, neighbourFace)) {
+-                    // not allowed to propagate
+-                    continue;
+-                }
+-            }
+-
+-            final int calculated = neighbourLevel - opacity;
+-            level = Math.max(calculated, level);
+-            if (level > expect) {
+-                return level;
+-            }
+-        }
+-
+-        return level;
++        return 15;
+     }
+ 
+     @Override
+diff --git a/ca/spottedleaf/moonrise/patches/starlight/light/StarLightEngine.java b/ca/spottedleaf/moonrise/patches/starlight/light/StarLightEngine.java
+index 1b74af157a70867cf3a62ac8faf7e015dd2b7bac..0a2c659c07d7b0af3d6f67e8ea55ae222d7ec332 100644
+--- a/ca/spottedleaf/moonrise/patches/starlight/light/StarLightEngine.java
++++ b/ca/spottedleaf/moonrise/patches/starlight/light/StarLightEngine.java
+@@ -313,15 +313,11 @@ public abstract class StarLightEngine {
+     }
+ 
+     protected final int getLightLevel(final int worldX, final int worldY, final int worldZ) {
+-        final SWMRNibbleArray nibble = this.nibbleCache[(worldX >> 4) + 5 * (worldZ >> 4) + (5 * 5) * (worldY >> 4) + this.chunkSectionIndexOffset];
+-
+-        return nibble == null ? 0 : nibble.getUpdating((worldX & 15) | ((worldZ & 15) << 4) | ((worldY & 15) << 8));
++        return 15; // PvP: always full-bright, no propagation needed
+     }
+ 
+     protected final int getLightLevel(final int sectionIndex, final int localIndex) {
+-        final SWMRNibbleArray nibble = this.nibbleCache[sectionIndex];
+-
+-        return nibble == null ? 0 : nibble.getUpdating(localIndex);
++        return 15; // PvP: always full-bright, no propagation needed
+     }
+ 
+     protected final void setLightLevel(final int worldX, final int worldY, final int worldZ, final int level) {
+@@ -423,25 +419,7 @@ public abstract class StarLightEngine {
+ 
+     public final void blocksChangedInChunk(final LightChunkGetter lightAccess, final int chunkX, final int chunkZ,
+                                            final Set<BlockPos> positions, final Boolean[] changedSections) {
+-        this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, true);
+-        try {
+-            final ChunkAccess chunk = this.getChunkInCache(chunkX, chunkZ);
+-            if (chunk == null) {
+-                return;
+-            }
+-            if (changedSections != null) {
+-                final boolean[] ret = this.handleEmptySectionChanges(lightAccess, chunk, changedSections, false);
+-                if (ret != null) {
+-                    this.setEmptinessMap(chunk, ret);
+-                }
+-            }
+-            if (!positions.isEmpty()) {
+-                this.propagateBlockChanges(lightAccess, chunk, positions);
+-            }
+-            this.updateVisible(lightAccess);
+-        } finally {
+-            this.destroyCaches();
+-        }
++        // PvP: light is always 15 — block changes never trigger recalculation
+     }
+ 
+     // subclasses should not initialise caches, as this will always be done by the super call
+@@ -698,42 +676,12 @@ public abstract class StarLightEngine {
+     }
+ 
+     public final void forceHandleEmptySectionChanges(final LightChunkGetter lightAccess, final ChunkAccess chunk, final Boolean[] emptinessChanges) {
+-        final int chunkX = chunk.getPos().x();
+-        final int chunkZ = chunk.getPos().z();
+-        this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, true);
+-        try {
+-            // force current chunk into cache
+-            this.setChunkInCache(chunkX, chunkZ, chunk);
+-            this.setBlocksForChunkInCache(chunkX, chunkZ, chunk.getSections());
+-            this.setNibblesForChunkInCache(chunkX, chunkZ, this.getNibblesOnChunk(chunk));
+-            this.setEmptinessMapCache(chunkX, chunkZ, this.getEmptinessMap(chunk));
+-
+-            final boolean[] ret = this.handleEmptySectionChanges(lightAccess, chunk, emptinessChanges, false);
+-            if (ret != null) {
+-                this.setEmptinessMap(chunk, ret);
+-            }
+-            this.updateVisible(lightAccess);
+-        } finally {
+-            this.destroyCaches();
+-        }
++        // PvP: light is always 15 — emptiness change recalculation disabled
+     }
+ 
+     public final void handleEmptySectionChanges(final LightChunkGetter lightAccess, final int chunkX, final int chunkZ,
+                                                 final Boolean[] emptinessChanges) {
+-        this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, true);
+-        try {
+-            final ChunkAccess chunk = this.getChunkInCache(chunkX, chunkZ);
+-            if (chunk == null) {
+-                return;
+-            }
+-            final boolean[] ret = this.handleEmptySectionChanges(lightAccess, chunk, emptinessChanges, false);
+-            if (ret != null) {
+-                this.setEmptinessMap(chunk, ret);
+-            }
+-            this.updateVisible(lightAccess);
+-        } finally {
+-            this.destroyCaches();
+-        }
++        // PvP: light is always 15 — section emptiness recalculation disabled
+     }
+ 
+     protected abstract void initNibble(final int chunkX, final int chunkY, final int chunkZ, final boolean extrude, final boolean initRemovedNibbles);
+@@ -863,31 +811,11 @@ public abstract class StarLightEngine {
+     }
+ 
+     public final void checkChunkEdges(final LightChunkGetter lightAccess, final int chunkX, final int chunkZ) {
+-        this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, false);
+-        try {
+-            final ChunkAccess chunk = this.getChunkInCache(chunkX, chunkZ);
+-            if (chunk == null) {
+-                return;
+-            }
+-            this.checkChunkEdges(lightAccess, chunk, this.minLightSection, this.maxLightSection);
+-            this.updateVisible(lightAccess);
+-        } finally {
+-            this.destroyCaches();
+-        }
++        // PvP: light is always 15 — chunk edge checks disabled
+     }
+ 
+     public final void checkChunkEdges(final LightChunkGetter lightAccess, final int chunkX, final int chunkZ, final ShortCollection sections) {
+-        this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, false);
+-        try {
+-            final ChunkAccess chunk = this.getChunkInCache(chunkX, chunkZ);
+-            if (chunk == null) {
+-                return;
+-            }
+-            this.checkChunkEdges(lightAccess, chunk, sections);
+-            this.updateVisible(lightAccess);
+-        } finally {
+-            this.destroyCaches();
+-        }
++        // PvP: light is always 15 — chunk edge checks disabled
+     }
+ 
+     // subclasses should not initialise caches, as this will always be done by the super call
+@@ -904,18 +832,18 @@ public abstract class StarLightEngine {
+         this.setupCaches(lightAccess, chunkX * 16 + 7, 128, chunkZ * 16 + 7, true, true);
+ 
+         try {
+-            final SWMRNibbleArray[] nibbles = getFilledEmptyLight(this.maxLightSection - this.minLightSection + 1);
+-            // force current chunk into cache
++            // PvP: skip all BFS propagation and emptiness tracking.
++            // Fill every nibble with level 15 so the client always sees a fully-bright world.
++            final int totalSections = this.maxLightSection - this.minLightSection + 1;
++            final SWMRNibbleArray[] nibbles = new SWMRNibbleArray[totalSections];
++            for (int i = 0; i < totalSections; i++) {
++                nibbles[i] = new SWMRNibbleArray(null, true);
++                for (int idx = 0; idx < (16 * 16 * 16); idx++) {
++                    nibbles[i].set(idx, 15);
++                }
++            }
+             this.setChunkInCache(chunkX, chunkZ, chunk);
+-            this.setBlocksForChunkInCache(chunkX, chunkZ, chunk.getSections());
+             this.setNibblesForChunkInCache(chunkX, chunkZ, nibbles);
+-            this.setEmptinessMapCache(chunkX, chunkZ, this.getEmptinessMap(chunk));
+-
+-            final boolean[] ret = this.handleEmptySectionChanges(lightAccess, chunk, emptySections, true);
+-            if (ret != null) {
+-                this.setEmptinessMap(chunk, ret);
+-            }
+-            this.lightChunk(lightAccess, chunk, true);
+             this.setNibbles(chunk, nibbles);
+             this.updateVisible(lightAccess);
+         } finally {
+@@ -925,125 +853,15 @@ public abstract class StarLightEngine {
+ 
+     public final void relightChunks(final LightChunkGetter lightAccess, final Set<ChunkPos> chunks,
+                                     final Consumer<ChunkPos> chunkLightCallback, final IntConsumer onComplete) {
+-        // it's recommended for maximum performance that the set is ordered according to a BFS from the center of
+-        // the region of chunks to relight
+-        // it's required that tickets are added for each chunk to keep them loaded
+-        final Long2ObjectOpenHashMap<SWMRNibbleArray[]> nibblesByChunk = new Long2ObjectOpenHashMap<>();
+-        final Long2ObjectOpenHashMap<boolean[]> emptinessMapByChunk = new Long2ObjectOpenHashMap<>();
+-
+-        final int[] neighbourLightOrder = new int[] {
+-                // d = 0
+-                0, 0,
+-                // d = 1
+-                -1, 0,
+-                0, -1,
+-                1, 0,
+-                0, 1,
+-                // d = 2
+-                -1, 1,
+-                1, 1,
+-                -1, -1,
+-                1, -1,
+-        };
+-
+-        int lightCalls = 0;
+-
+-        for (final ChunkPos chunkPos : chunks) {
+-            final int chunkX = chunkPos.x();
+-            final int chunkZ = chunkPos.z();
+-            final ChunkAccess chunk = (ChunkAccess)lightAccess.getChunkForLighting(chunkX, chunkZ);
+-            if (chunk == null || !this.canUseChunk(chunk)) {
+-                throw new IllegalStateException();
+-            }
+-
+-            for (int i = 0, len = neighbourLightOrder.length; i < len; i += 2) {
+-                final int dx = neighbourLightOrder[i];
+-                final int dz = neighbourLightOrder[i + 1];
+-                final int neighbourX = dx + chunkX;
+-                final int neighbourZ = dz + chunkZ;
+-
+-                final ChunkAccess neighbour = (ChunkAccess)lightAccess.getChunkForLighting(neighbourX, neighbourZ);
+-                if (neighbour == null || !this.canUseChunk(neighbour)) {
+-                    continue;
+-                }
+-
+-                if (nibblesByChunk.get(CoordinateUtils.getChunkKey(neighbourX, neighbourZ)) != null) {
+-                    // lit already called for neighbour, no need to light it now
+-                    continue;
+-                }
+-
+-                // light neighbour chunk
+-                this.setupEncodeOffset(neighbourX * 16 + 7, 128, neighbourZ * 16 + 7);
+-                try {
+-                    // insert all neighbouring chunks for this neighbour that we have data for
+-                    for (int dz2 = -1; dz2 <= 1; ++dz2) {
+-                        for (int dx2 = -1; dx2 <= 1; ++dx2) {
+-                            final int neighbourX2 = neighbourX + dx2;
+-                            final int neighbourZ2 = neighbourZ + dz2;
+-                            final long key = CoordinateUtils.getChunkKey(neighbourX2, neighbourZ2);
+-                            final ChunkAccess neighbour2 = (ChunkAccess)lightAccess.getChunkForLighting(neighbourX2, neighbourZ2);
+-                            if (neighbour2 == null || !this.canUseChunk(neighbour2)) {
+-                                continue;
+-                            }
+-
+-                            final SWMRNibbleArray[] nibbles = nibblesByChunk.get(key);
+-                            if (nibbles == null) {
+-                                // we haven't lit this chunk
+-                                continue;
+-                            }
+-
+-                            this.setChunkInCache(neighbourX2, neighbourZ2, neighbour2);
+-                            this.setBlocksForChunkInCache(neighbourX2, neighbourZ2, neighbour2.getSections());
+-                            this.setNibblesForChunkInCache(neighbourX2, neighbourZ2, nibbles);
+-                            this.setEmptinessMapCache(neighbourX2, neighbourZ2, emptinessMapByChunk.get(key));
+-                        }
+-                    }
+-
+-                    final long key = CoordinateUtils.getChunkKey(neighbourX, neighbourZ);
+-
+-                    // now insert the neighbour chunk and light it
+-                    final SWMRNibbleArray[] nibbles = getFilledEmptyLight(this.world);
+-                    nibblesByChunk.put(key, nibbles);
+-
+-                    this.setChunkInCache(neighbourX, neighbourZ, neighbour);
+-                    this.setBlocksForChunkInCache(neighbourX, neighbourZ, neighbour.getSections());
+-                    this.setNibblesForChunkInCache(neighbourX, neighbourZ, nibbles);
+-
+-                    final boolean[] neighbourEmptiness = this.handleEmptySectionChanges(lightAccess, neighbour, getEmptySectionsForChunk(neighbour), true);
+-                    emptinessMapByChunk.put(key, neighbourEmptiness);
+-                    if (chunks.contains(new ChunkPos(neighbourX, neighbourZ))) {
+-                        this.setEmptinessMap(neighbour, neighbourEmptiness);
+-                    }
+-
+-                    this.lightChunk(lightAccess, neighbour, false);
+-                } finally {
+-                    this.destroyCaches();
+-                }
+-            }
+-
+-            // done lighting all neighbours, so the chunk is now fully lit
+-
+-            // make sure nibbles are fully updated before calling back
+-            final SWMRNibbleArray[] nibbles = nibblesByChunk.get(CoordinateUtils.getChunkKey(chunkX, chunkZ));
+-            for (final SWMRNibbleArray nibble : nibbles) {
+-                nibble.updateVisible();
+-            }
+-
+-            this.setNibbles(chunk, nibbles);
+-
+-            for (int y = this.minLightSection; y <= this.maxLightSection; ++y) {
+-                lightAccess.onLightUpdate(this.skylightPropagator ? LightLayer.SKY : LightLayer.BLOCK, SectionPos.of(chunkX, y, chunkZ));
+-            }
+-
+-            // now do callback
++        // PvP: light is always 15 — relight skipped entirely.
++        // Callbacks are still fired so callers do not stall waiting for completion.
+             if (chunkLightCallback != null) {
+-                chunkLightCallback.accept(chunkPos);
++            for (final ChunkPos pos : chunks) {
++                chunkLightCallback.accept(pos);
+             }
+-            ++lightCalls;
+         }
+-
+         if (onComplete != null) {
+-            onComplete.accept(lightCalls);
++            onComplete.accept(chunks.size());
+         }
+     }
+ 
+@@ -1256,195 +1074,6 @@ public abstract class StarLightEngine {
+     }
+ 
+     protected final void performLightDecrease(final LightChunkGetter lightAccess) {
+-        final BlockGetter world = lightAccess.getLevel();
+-        long[] queue = this.decreaseQueue;
+-        long[] increaseQueue = this.increaseQueue;
+-        int queueReadIndex = 0;
+-        int queueLength = this.decreaseQueueInitialLength;
+-        this.decreaseQueueInitialLength = 0;
+-        int increaseQueueLength = this.increaseQueueInitialLength;
+-        final int decodeOffsetX = -this.encodeOffsetX;
+-        final int decodeOffsetY = -this.encodeOffsetY;
+-        final int decodeOffsetZ = -this.encodeOffsetZ;
+-        final int encodeOffset = this.coordinateOffset;
+-        final int sectionOffset = this.chunkSectionIndexOffset;
+-        final int emittedMask = this.emittedLightMask;
+-
+-        final PlatformHooks platformHooks = PlatformHooks.get();
+-
+-        while (queueReadIndex < queueLength) {
+-            final long queueValue = queue[queueReadIndex++];
+-
+-            final int posX = ((int)queueValue & 63) + decodeOffsetX;
+-            final int posZ = (((int)queueValue >>> 6) & 63) + decodeOffsetZ;
+-            final int posY = (((int)queueValue >>> 12) & ((1 << 16) - 1)) + decodeOffsetY;
+-            final int propagatedLightLevel = (int)((queueValue >>> (6 + 6 + 16)) & 0xF);
+-            final AxisDirection[] checkDirections = OLD_CHECK_DIRECTIONS[(int)((queueValue >>> (6 + 6 + 16 + 4)) & 63)];
+-
+-            if ((queueValue & FLAG_HAS_SIDED_TRANSPARENT_BLOCKS) == 0L) {
+-                // we don't need to worry about our state here.
+-                for (final AxisDirection propagate : checkDirections) {
+-                    final int offX = posX + propagate.x;
+-                    final int offY = posY + propagate.y;
+-                    final int offZ = posZ + propagate.z;
+-
+-                    final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
+-                    final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
+-
+-                    final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
+-                    final int lightLevel;
+-
+-                    if (currentNibble == null || (lightLevel = currentNibble.getUpdating(localIndex)) == 0) {
+-                        // already at lowest (or unloaded), nothing we can do
+-                        continue;
+-                    }
+-
+-                    final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
+-                    if (blockState == null) {
+-                        continue;
+-                    }
+-                    this.lightEmissionPos.set(offX, offY, offZ);
+-                    long flags = 0;
+-                    if (((StarlightAbstractBlockState)blockState).starlight$isConditionallyFullOpaque()) {
+-                        final VoxelShape cullingFace = blockState.getFaceOcclusionShape(propagate.getOpposite().nms);
+-
+-                        if (Shapes.faceShapeOccludes(Shapes.empty(), cullingFace)) {
+-                            continue;
+-                        }
+-                        flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
+-                    }
+-
+-                    final int opacity = blockState.getLightDampening();
+-                    final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacity));
+-                    if (lightLevel > targetLevel) {
+-                        // it looks like another source propagated here, so re-propagate it
+-                        if (increaseQueueLength >= increaseQueue.length) {
+-                            increaseQueue = this.resizeIncreaseQueue();
+-                        }
+-                        increaseQueue[increaseQueueLength++] =
+-                                ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+-                                        | ((lightLevel & 0xFL) << (6 + 6 + 16))
+-                                        | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+-                                        | (FLAG_RECHECK_LEVEL | flags);
+-                        continue;
+-                    }
+-                    final int emittedLight = (platformHooks.getLightEmission(blockState, world, this.lightEmissionPos)) & emittedMask;
+-                    if (emittedLight != 0) {
+-                        // re-propagate source
+-                        // note: do not set recheck level, or else the propagation will fail
+-                        if (increaseQueueLength >= increaseQueue.length) {
+-                            increaseQueue = this.resizeIncreaseQueue();
+-                        }
+-                        increaseQueue[increaseQueueLength++] =
+-                                ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+-                                        | ((emittedLight & 0xFL) << (6 + 6 + 16))
+-                                        | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+-                                        | (flags | FLAG_WRITE_LEVEL);
+-                    }
+-
+-                    currentNibble.set(localIndex, 0);
+-                    this.postLightUpdate(offX, offY, offZ);
+-
+-                    if (targetLevel > 0) {
+-                        if (queueLength >= queue.length) {
+-                            queue = this.resizeDecreaseQueue();
+-                        }
+-                        queue[queueLength++] =
+-                                ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+-                                        | ((targetLevel & 0xFL) << (6 + 6 + 16))
+-                                        | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+-                                        | flags;
+-                    }
+-                    continue;
+-                }
+-            } else {
+-                // we actually need to worry about our state here
+-                final BlockState fromBlock = this.getBlockState(posX, posY, posZ);
+-                for (final AxisDirection propagate : checkDirections) {
+-                    final int offX = posX + propagate.x;
+-                    final int offY = posY + propagate.y;
+-                    final int offZ = posZ + propagate.z;
+-
+-                    final int sectionIndex = (offX >> 4) + 5 * (offZ >> 4) + (5 * 5) * (offY >> 4) + sectionOffset;
+-                    final int localIndex = (offX & 15) | ((offZ & 15) << 4) | ((offY & 15) << 8);
+-
+-                    final VoxelShape fromShape = (((StarlightAbstractBlockState)fromBlock).starlight$isConditionallyFullOpaque()) ? fromBlock.getFaceOcclusionShape(propagate.nms) : Shapes.empty();
+-
+-                    if (fromShape != Shapes.empty() && Shapes.faceShapeOccludes(Shapes.empty(), fromShape)) {
+-                        continue;
+-                    }
+-
+-                    final SWMRNibbleArray currentNibble = this.nibbleCache[sectionIndex];
+-                    final int lightLevel;
+-
+-                    if (currentNibble == null || (lightLevel = currentNibble.getUpdating(localIndex)) == 0) {
+-                        // already at lowest (or unloaded), nothing we can do
+-                        continue;
+-                    }
+-
+-                    final BlockState blockState = this.getBlockState(sectionIndex, localIndex);
+-                    if (blockState == null) {
+-                        continue;
+-                    }
+-                    this.lightEmissionPos.set(offX, offY, offZ);
+-                    long flags = 0;
+-                    if (((StarlightAbstractBlockState)blockState).starlight$isConditionallyFullOpaque()) {
+-                        final VoxelShape cullingFace = blockState.getFaceOcclusionShape(propagate.getOpposite().nms);
+-
+-                        if (Shapes.faceShapeOccludes(fromShape, cullingFace)) {
+-                            continue;
+-                        }
+-                        flags |= FLAG_HAS_SIDED_TRANSPARENT_BLOCKS;
+-                    }
+-
+-                    final int opacity = blockState.getLightDampening();
+-                    final int targetLevel = Math.max(0, propagatedLightLevel - Math.max(1, opacity));
+-                    if (lightLevel > targetLevel) {
+-                        // it looks like another source propagated here, so re-propagate it
+-                        if (increaseQueueLength >= increaseQueue.length) {
+-                            increaseQueue = this.resizeIncreaseQueue();
+-                        }
+-                        increaseQueue[increaseQueueLength++] =
+-                                ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+-                                        | ((lightLevel & 0xFL) << (6 + 6 + 16))
+-                                        | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+-                                        | (FLAG_RECHECK_LEVEL | flags);
+-                        continue;
+-                    }
+-                    final int emittedLight = (platformHooks.getLightEmission(blockState, world, this.lightEmissionPos)) & emittedMask;
+-                    if (emittedLight != 0) {
+-                        // re-propagate source
+-                        // note: do not set recheck level, or else the propagation will fail
+-                        if (increaseQueueLength >= increaseQueue.length) {
+-                            increaseQueue = this.resizeIncreaseQueue();
+-                        }
+-                        increaseQueue[increaseQueueLength++] =
+-                                ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+-                                        | ((emittedLight & 0xFL) << (6 + 6 + 16))
+-                                        | (((long)ALL_DIRECTIONS_BITSET) << (6 + 6 + 16 + 4))
+-                                        | (flags | FLAG_WRITE_LEVEL);
+-                    }
+-
+-                    currentNibble.set(localIndex, 0);
+-                    this.postLightUpdate(offX, offY, offZ);
+-
+-                    if (targetLevel > 0) { // we actually need to propagate 0 just in case we find a neighbour...
+-                        if (queueLength >= queue.length) {
+-                            queue = this.resizeDecreaseQueue();
+-                        }
+-                        queue[queueLength++] =
+-                                ((offX + (offZ << 6) + (offY << 12) + encodeOffset) & ((1L << (6 + 6 + 16)) - 1))
+-                                        | ((targetLevel & 0xFL) << (6 + 6 + 16))
+-                                        | ((propagate.everythingButTheOppositeDirection) << (6 + 6 + 16 + 4))
+-                                        | flags;
+-                    }
+-                    continue;
+-                }
+-            }
+-        }
+ 
+-        // propagate sources we clobbered
+-        this.increaseQueueInitialLength = increaseQueueLength;
+-        this.performLightIncrease(lightAccess);
+     }
+ }

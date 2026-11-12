@@ -1,0 +1,506 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Sun, 8 Nov 2026 19:51:03 +0330
+Subject: [PATCH] Practice world optimizations
+
+
+diff --git a/alternate/current/wire/WireHandler.java b/alternate/current/wire/WireHandler.java
+index 259b301b2c8b64cb7974a235afb260e0e991af54..d2ef67806ee4ab765c7fcdb4005f2e83d907ba18 100644
+--- a/alternate/current/wire/WireHandler.java
++++ b/alternate/current/wire/WireHandler.java
+@@ -405,69 +405,26 @@ public class WireHandler {
+ 
+     /**
+      * This method should be called whenever a wire receives a block update.
++     * Disabled: redstone wire processing is fully skipped on this server.
+      */
+     public boolean onWireUpdated(BlockPos pos, BlockState state, Orientation orientation) {
+-        Node node = getOrAddNode(pos, state);
+-
+-        if (!node.isWire()) {
+-            return false; // we should never get here
+-        }
+-
+-        WireNode wire = node.asWire();
+-
+-        invalidate();
+-        revalidateNode(wire);
+-        findRoots(wire, orientation);
+-        tryUpdate();
+-
+-        return true;
++        return false;
+     }
+ 
+     /**
+      * This method should be called whenever a wire is placed.
++     * Disabled: redstone wire processing is fully skipped on this server.
+      */
+     public void onWireAdded(BlockPos pos, BlockState state) {
+-        Node node = getOrAddNode(pos, state);
+-
+-        if (!node.isWire()) {
+-            return; // we should never get here
+-        }
+-
+-        WireNode wire = node.asWire();
+-        wire.added = true;
+-
+-        invalidate();
+-        revalidateNode(wire);
+-        findRoot(wire);
+-        tryUpdate();
++        // no-op
+     }
+ 
+     /**
+      * This method should be called whenever a wire is removed.
++     * Disabled: redstone wire processing is fully skipped on this server.
+      */
+     public void onWireRemoved(BlockPos pos, BlockState state) {
+-        Node node = removeNode(pos);
+-        WireNode wire;
+-
+-        if (node == null || !node.isWire()) {
+-            wire = new WireNode(level, pos, state);
+-        } else {
+-            wire = node.asWire();
+-        }
+-
+-        wire.invalid = true;
+-        wire.removed = true;
+-
+-        // If these fields are set to 'true', the removal of this wire was part of
+-        // already ongoing power changes, so we can exit early here.
+-        if (updating && wire.shouldBreak) {
+-            return;
+-        }
+-
+-        invalidate();
+-        revalidateNode(wire);
+-        findRoot(wire);
+-        tryUpdate();
++        // no-op
+     }
+ 
+     /**
+diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
+index 4929ac9cdfe22a98343baa0da8a09676218ee5e7..1e578cabf8796ff55706ce03c8ce376e5471f273 100644
+--- a/net/minecraft/server/MinecraftServer.java
++++ b/net/minecraft/server/MinecraftServer.java
+@@ -188,6 +188,14 @@ import org.jspecify.annotations.Nullable;
+ import org.slf4j.Logger;
+ 
+ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTask> implements CommandSource, ServerInfo, ChunkIOErrorReporter, ca.spottedleaf.moonrise.patches.chunk_system.server.ChunkSystemMinecraftServer { // Paper - rewrite chunk system
++    // PracticePvP start - tick budget, heavy work is skipped once a tick runs past this
++    public static long currentTickStartTime = 0L;
++    public static final long TICK_BUDGET_NS = 35_000_000L; // 35ms, leaves 15ms for networking
++
++    public static boolean isOverBudget() {
++        return (System.nanoTime() - currentTickStartTime) > TICK_BUDGET_NS;
++    }
++    // PracticePvP end
+     private static MinecraftServer SERVER; // Paper
+     public static final Logger LOGGER = LogUtils.getLogger();
+     public static final net.kyori.adventure.text.logger.slf4j.ComponentLogger COMPONENT_LOGGER = net.kyori.adventure.text.logger.slf4j.ComponentLogger.logger(LOGGER.getName()); // Paper
+@@ -1295,10 +1303,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+                     // Paper start - improve tick loop
+                     // handle catchup logic
+                     final long ticksBehind = Math.max(1L, this.tickSchedule.getPeriodsAhead(thisTickNanos, tickStart));
+-                    final long catchup = (long)Math.max(
+-                        1,
+-                        io.papermc.paper.configuration.GlobalConfiguration.get().misc.catchupTicks.or(5)
+-                    );
++                    final long catchup = Math.min(MAX_TICK_LATENCY, ticksBehind); // PracticePvP - catch up at most MAX_TICK_LATENCY ticks
+ 
+                     // adjust ticksBehind so that it is not greater-than catchup
+                     if (ticksBehind - catchup > 0L) {
+@@ -1559,6 +1564,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+     }
+ 
+     protected void tickServer(final BooleanSupplier haveTime) {
++        MinecraftServer.currentTickStartTime = System.nanoTime(); // PracticePvP
++
+         org.spigotmc.WatchdogThread.tick(); // Spigot
+         long nano = Util.getNanos();
+         int emptyTickThreshold = this.pauseWhenEmptySeconds() * 20;
+@@ -1717,7 +1724,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+             Optional.of(players),
+             Optional.of(ServerStatus.Version.current()),
+             Optional.ofNullable(this.statusIcon),
+-            this.enforceSecureProfile()
++            false
+         );
+     }
+ 
+diff --git a/net/minecraft/server/level/ChunkMap.java b/net/minecraft/server/level/ChunkMap.java
+index fd0b9f20fbdd523d51550fd6009b5011e6e7e6e6..d7eafb9b9e96569924edd61ffd86437437f8eb8a 100644
+--- a/net/minecraft/server/level/ChunkMap.java
++++ b/net/minecraft/server/level/ChunkMap.java
+@@ -1412,6 +1412,12 @@ public class ChunkMap extends SimpleRegionStorage implements ChunkHolder.PlayerP
+                 // Vec3 deltaToPlayer = player.position().subtract(this.entity.position());
+                 double deltaToPlayerX = player.getX() - this.entity.getX();
+                 double deltaToPlayerZ = player.getZ() - this.entity.getZ();
++                // PracticePvP start - entities in other arenas (over 256 blocks away) are never tracked
++                if (Math.abs(deltaToPlayerX) > 256.0 || Math.abs(deltaToPlayerZ) > 256.0) {
++                    this.removePlayer(player);
++                    return;
++                }
++                // PracticePvP end
+                 // Paper end - remove allocation of Vec3 here
+                 int playerViewDistance = ChunkMap.this.getPlayerViewDistance(player);
+                 double visibleRange = Math.min(this.getEffectiveRange(), playerViewDistance * 16);
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 2d543081a0cae216d35ebb34bda9f48abd706389..e14300c739c5372788b03f22a371b0b177fefa27 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -896,15 +896,25 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+         if (!this.isDebug() && runs) {
+             long tick = this.getGameTime();
+             profiler.push("blockTicks");
++
++            // PracticePvP - skip block ticks when over the tick budget
++            if (!net.minecraft.server.MinecraftServer.isOverBudget()) {
+             this.blockTicks.tick(tick, paperConfig().environment.maxBlockTicks, this::tickBlock); // Paper - configurable max block ticks
++            }
++
+             profiler.popPush("fluidTicks");
++
++            // PracticePvP - skip fluid ticks when over the tick budget
++            if (!net.minecraft.server.MinecraftServer.isOverBudget()) {
+             this.fluidTicks.tick(tick, paperConfig().environment.maxFluidTicks, this::tickFluid); // Paper - configurable max fluid ticks
++            }
++
+             profiler.pop();
+         }
+ 
+         profiler.popPush("raid");
+         if (runs) {
+-            this.raids.tick(this);
++            // this.raids.tick(this); // PracticePvP: Disable raids
+         }
+ 
+         profiler.popPush("chunkSource");
+@@ -1090,6 +1100,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     }
+ 
+     public void tickThunder(final LevelChunk chunk) {
++        if (true) return; // PracticePvP - disable thunder entirely
+         ChunkPos chunkPos = chunk.getPos();
+         boolean raining = this.isRaining();
+         int minX = chunkPos.getMinBlockX();
+@@ -1267,112 +1278,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     }
+ 
+     private void advanceWeatherCycle() {
+-        boolean wasRaining = this.isRaining();
+-        if (this.canHaveWeather()) {
+-            WeatherData weatherData = this.getWeatherData();
+-            if (this.getGameRules().get(GameRules.ADVANCE_WEATHER)) {
+-                int clearWeatherTime = weatherData.getClearWeatherTime();
+-                int thunderTime = weatherData.getThunderTime();
+-                int rainTime = weatherData.getRainTime();
+-                boolean thundering = weatherData.isThundering();
+-                boolean raining = weatherData.isRaining();
+-                if (clearWeatherTime > 0) {
+-                    clearWeatherTime--;
+-                    thunderTime = thundering ? 0 : 1;
+-                    rainTime = raining ? 0 : 1;
+-                    thundering = false;
+-                    raining = false;
+-                } else {
+-                    if (thunderTime > 0) {
+-                        if (--thunderTime == 0) {
+-                            thundering = !thundering;
+-                        }
+-                    } else if (thundering) {
+-                        thunderTime = THUNDER_DURATION.sample(this.random);
+-                    } else {
+-                        thunderTime = THUNDER_DELAY.sample(this.random);
+-                    }
+-
+-                    if (rainTime > 0) {
+-                        if (--rainTime == 0) {
+-                            raining = !raining;
+-                        }
+-                    } else if (raining) {
+-                        rainTime = RAIN_DURATION.sample(this.random);
+-                    } else {
+-                        rainTime = RAIN_DELAY.sample(this.random);
+-                    }
+-                }
+-
+-                weatherData.setThunderTime(thunderTime);
+-                weatherData.setRainTime(rainTime);
+-                weatherData.setClearWeatherTime(clearWeatherTime);
+-                weatherData.setThundering(thundering, org.bukkit.event.weather.ThunderChangeEvent.Cause.NATURAL); // Paper - Add cause to Weather/ThunderChangeEvents
+-                weatherData.setRaining(raining, org.bukkit.event.weather.WeatherChangeEvent.Cause.NATURAL); // Paper - Add cause to Weather/ThunderChangeEvents
+-            }
+-
+-            this.oThunderLevel = this.thunderLevel;
+-            if (weatherData.isThundering()) {
+-                this.thunderLevel += 0.01F;
+-            } else {
+-                this.thunderLevel -= 0.01F;
+-            }
+-
+-            this.thunderLevel = Mth.clamp(this.thunderLevel, 0.0F, 1.0F);
+-            this.oRainLevel = this.rainLevel;
+-            if (weatherData.isRaining()) {
+-                this.rainLevel += 0.01F;
+-            } else {
+-                this.rainLevel -= 0.01F;
+-            }
+-
+-            this.rainLevel = Mth.clamp(this.rainLevel, 0.0F, 1.0F);
+-        }
+-
+-        /* CraftBukkit start
+-        if (this.oRainLevel != this.rainLevel) {
+-            this.server
+-                .getPlayerList()
+-                .broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, this.rainLevel), this.dimension());
+-        }
+-
+-        if (this.oThunderLevel != this.thunderLevel) {
+-            this.server
+-                .getPlayerList()
+-                .broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, this.thunderLevel), this.dimension());
+-        }
+-
+-        if (wasRaining != this.isRaining()) {
+-            if (wasRaining) {
+-                this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.STOP_RAINING, 0.0F));
+-            } else {
+-                this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.START_RAINING, 0.0F));
+-            }
+-
+-            this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, this.rainLevel));
+-            this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, this.thunderLevel));
+-        }
+-        */
+-        for (ServerPlayer player : this.players) {
+-            if (player.level() == this) {
+-                player.tickWeather();
+-            }
+-        }
+-
+-        if (wasRaining != this.isRaining()) {
+-            // Only send weather packets to those affected
+-            for (ServerPlayer player : this.players) {
+-                if (player.level() == this) {
+-                    player.setPlayerWeather((!wasRaining ? org.bukkit.WeatherType.DOWNFALL : org.bukkit.WeatherType.CLEAR), false);
+-                }
+-            }
+-        }
+-        for (ServerPlayer player : this.players) {
+-            if (player.level() == this) {
+-                player.updateWeather(this.oRainLevel, this.rainLevel, this.oThunderLevel, this.thunderLevel);
+-            }
+-        }
+-        // CraftBukkit end
++        return; // PracticePvP: Disable weather entirely
+     }
+ 
+     @VisibleForTesting
+@@ -1440,6 +1346,11 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     // Paper end - log detailed entity tick information
+ 
+     public void tickNonPassenger(final Entity entity) {
++        // PracticePvP start - skip non-combat entities when over the tick budget
++        if (!(entity instanceof ServerPlayer || entity instanceof net.minecraft.world.entity.projectile.Projectile) && net.minecraft.server.MinecraftServer.isOverBudget()) {
++            return;
++        }
++        // PracticePvP end
+         // Paper start - log detailed entity tick information
+         ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread("Cannot tick an entity off-main");
+         try {
+diff --git a/net/minecraft/world/entity/ai/village/poi/PoiManager.java b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+index 3b07e731e8d16c2b71cb55b85163029cf56fd02e..66169745d728d708e802f56ce43f0613d892b15e 100644
+--- a/net/minecraft/world/entity/ai/village/poi/PoiManager.java
++++ b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+@@ -199,7 +199,7 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+     }
+ 
+     public void remove(final BlockPos pos) {
+-        this.getOrLoad(SectionPos.asLong(pos)).ifPresent(poiSection -> poiSection.remove(pos));
++        // PracticePvP - no POI tracking
+     }
+ 
+     public long getCountInRange(final Predicate<Holder<PoiType>> predicate, final BlockPos center, final int radius, final PoiManager.Occupancy occupancy) {
+@@ -434,7 +434,7 @@ public class PoiManager extends SectionStorage<PoiSection, PoiSection.Packed> im
+ 
+     @Override
+     public void tick(final BooleanSupplier haveTime) {
+-        this.villageDistanceTracker.propagateUpdates(); // Paper - rewrite chunk system
++        // PracticePvP - no POI tracking
+     }
+ 
+     @Override
+diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
+index 932865a9c5aafc4ce9759ababb5ea869ebb97ecf..4ff37270a8aa3c37401850451be8b54ed4f3741c 100644
+--- a/net/minecraft/world/level/Level.java
++++ b/net/minecraft/world/level/Level.java
+@@ -1500,6 +1500,10 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
+         final it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<@Nullable TickingBlockEntity> toRemove = new it.unimi.dsi.fastutil.objects.ReferenceOpenHashSet<>();
+         toRemove.add(null);
+         for (int tickerIndex = 0; tickerIndex < this.blockEntityTickers.size(); tickerIndex++) {
++            // PracticePvP - stop ticking block entities when over the tick budget
++            if (net.minecraft.server.MinecraftServer.isOverBudget()) {
++                break;
++            }
+             final TickingBlockEntity ticker = this.blockEntityTickers.get(tickerIndex);
+         // Paper end - Fix MC-117075 use removeAll
+             if (ticker.isRemoved()) {
+diff --git a/net/minecraft/world/level/NaturalSpawner.java b/net/minecraft/world/level/NaturalSpawner.java
+index 06c63a3429d010546c8b9de610cbae7bf6bb6935..0c063cf7981de26bcadadcb9f6e58222c1801573 100644
+--- a/net/minecraft/world/level/NaturalSpawner.java
++++ b/net/minecraft/world/level/NaturalSpawner.java
+@@ -153,6 +153,7 @@ public final class NaturalSpawner {
+     public static void spawnForChunk(
+         final ServerLevel level, final LevelChunk chunk, final NaturalSpawner.SpawnState state, final List<MobCategory> spawningCategories
+     ) {
++        if (true) return; // PracticePvP - disable all natural mob spawning
+         ProfilerFiller profiler = Profiler.get();
+         profiler.push("spawner");
+ 
+diff --git a/net/minecraft/world/level/block/state/BlockBehaviour.java b/net/minecraft/world/level/block/state/BlockBehaviour.java
+index 44fcc919a2de54c3ceb0fd0875aadaea083fabad..8c5bcd1b67c5005654ed12e8eaf763aa1f17a018 100644
+--- a/net/minecraft/world/level/block/state/BlockBehaviour.java
++++ b/net/minecraft/world/level/block/state/BlockBehaviour.java
+@@ -80,6 +80,7 @@ import net.minecraft.world.phys.Vec3;
+ import net.minecraft.world.phys.shapes.CollisionContext;
+ import net.minecraft.world.phys.shapes.Shapes;
+ import net.minecraft.world.phys.shapes.VoxelShape;
++import net.minecraft.world.phys.shapes.VoxelShapeCache;
+ import org.jspecify.annotations.Nullable;
+ 
+ public abstract class BlockBehaviour implements FeatureElement {
+@@ -1142,7 +1143,10 @@ public abstract class BlockBehaviour implements FeatureElement {
+ 
+             private Cache(final BlockState state) {
+                 Block block = state.getBlock();
+-                this.collisionShape = block.getCollisionShape(state, EmptyBlockGetter.INSTANCE, BlockPos.ZERO, CollisionContext.empty());
++                // PracticePvP - deduplicate identical collision shapes
++                VoxelShape rawCollisionShape = block.getCollisionShape(state, EmptyBlockGetter.INSTANCE, BlockPos.ZERO, CollisionContext.empty());
++                this.collisionShape = VoxelShapeCache.deduplicate(rawCollisionShape);
++
+                 if (!this.collisionShape.isEmpty() && state.hasOffsetFunction()) {
+                     throw new IllegalStateException(
+                         String.format(
+diff --git a/net/minecraft/world/level/chunk/ChunkGenerator.java b/net/minecraft/world/level/chunk/ChunkGenerator.java
+index cc4800823c20e8ecbf0b4d74fd85a22bcb70c74c..3fa9523206e5ae663eb4fafea72b38247002982c 100644
+--- a/net/minecraft/world/level/chunk/ChunkGenerator.java
++++ b/net/minecraft/world/level/chunk/ChunkGenerator.java
+@@ -586,7 +586,7 @@ public abstract class ChunkGenerator {
+         final StructureTemplateManager structureTemplateManager,
+         final ResourceKey<Level> level
+     ) {
+-        if (!SharedConstants.DEBUG_DISABLE_STRUCTURES) {
++        if (false && !SharedConstants.DEBUG_DISABLE_STRUCTURES) { // PracticePvP - never generate structures
+             ChunkPos sourceChunkPos = centerChunk.getPos();
+             RandomState randomState = state.randomState();
+             Climate.Sampler climateSampler = randomState.createClimateSampler(SamplerContext.builder().enableCaches().build());
+diff --git a/net/minecraft/world/level/pathfinder/PathFinder.java b/net/minecraft/world/level/pathfinder/PathFinder.java
+index b903ae067130b460fca782fa8f37e9405670eeee..d96f477f477765b176467078288123e41de64cee 100644
+--- a/net/minecraft/world/level/pathfinder/PathFinder.java
++++ b/net/minecraft/world/level/pathfinder/PathFinder.java
+@@ -48,22 +48,7 @@ public class PathFinder {
+         final int reachRange,
+         final float maxVisitedNodesMultiplier
+     ) {
+-        this.openSet.clear();
+-        this.nodeEvaluator.prepare(level, entity);
+-        Node from = this.nodeEvaluator.getStart();
+-        if (from == null) {
+-            return null;
+-        }
+-
+-        // Paper start - Perf: remove streams and optimize collection
+-        List<Map.Entry<Target, BlockPos>> tos = Lists.newArrayList();
+-        for (BlockPos pos : targets) {
+-            tos.add(new java.util.AbstractMap.SimpleEntry<>(this.nodeEvaluator.getTarget(pos.getX(), pos.getY(), pos.getZ()), pos));
+-        }
+-        // Paper end - Perf: remove streams and optimize collection
+-        Path path = this.findPath(from, tos, maxPathLength, reachRange, maxVisitedNodesMultiplier);
+-        this.nodeEvaluator.done();
+-        return path;
++        return null; // PracticePvP - no mob pathfinding
+     }
+ 
+     private @Nullable Path findPath(
+diff --git a/net/minecraft/world/level/redstone/Redstone.java b/net/minecraft/world/level/redstone/Redstone.java
+index 8e4e26df4e0e131c04b2b9602348e92e05a7285c..ffc1045cb7b96ed3771e0a27320ff1ad418e5dfa 100644
+--- a/net/minecraft/world/level/redstone/Redstone.java
++++ b/net/minecraft/world/level/redstone/Redstone.java
+@@ -2,8 +2,8 @@ package net.minecraft.world.level.redstone;
+ 
+ public class Redstone {
+     public static final int BITS = 4;
+-    public static final int MASK = 15;
++    public static final int MASK = 1;
+     public static final int SIGNAL_MIN = 0;
+-    public static final int SIGNAL_MAX = 15;
++    public static final int SIGNAL_MAX = 1;
+     public static final int SIGNAL_NONE = 0;
+ }
+diff --git a/net/minecraft/world/phys/shapes/VoxelShapeCache.java b/net/minecraft/world/phys/shapes/VoxelShapeCache.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..26c467e90f5389828ce2aefbcaff1ad90ab91568
+--- /dev/null
++++ b/net/minecraft/world/phys/shapes/VoxelShapeCache.java
+@@ -0,0 +1,53 @@
++package net.minecraft.world.phys.shapes;
++
++import java.util.List;
++import java.util.concurrent.ConcurrentHashMap;
++import net.minecraft.world.phys.AABB;
++
++public class VoxelShapeCache {
++
++    // Thread-safe map to hold our unique shapes
++    private static final ConcurrentHashMap<String, VoxelShape> CACHE = new ConcurrentHashMap<>();
++
++    /**
++     * Deduplicates a VoxelShape by comparing its exact physical bounding boxes.
++     */
++    public static VoxelShape deduplicate(VoxelShape shape) {
++        // Fallback to Vanilla singletons for the most common shapes
++        if (shape == null || shape.isEmpty()) {
++            return Shapes.empty();
++        }
++        if (shape == Shapes.block()) {
++            return Shapes.block();
++        }
++
++        // Generate a precise key based on the actual hitboxes
++        String key = generateKey(shape);
++
++        // Return the existing shape if we already have it, otherwise store this new one
++        return CACHE.computeIfAbsent(key, k -> shape);
++    }
++
++    /**
++     * Generates a unique string key based on every internal bounding box of the shape.
++     * This guarantees 100% collision accuracy for PvP.
++     */
++    private static String generateKey(VoxelShape shape) {
++        List<AABB> boxes = shape.toAabbs();
++        if (boxes.isEmpty()) {
++            return "empty";
++        }
++
++        // Use a StringBuilder for fast string concatenation
++        StringBuilder sb = new StringBuilder();
++        for (AABB box : boxes) {
++            sb.append(box.minX).append(',')
++                    .append(box.minY).append(',')
++                    .append(box.minZ).append(',')
++                    .append(box.maxX).append(',')
++                    .append(box.maxY).append(',')
++                    .append(box.maxZ).append(';');
++        }
++        return sb.toString();
++    }
++}
+\ No newline at end of file

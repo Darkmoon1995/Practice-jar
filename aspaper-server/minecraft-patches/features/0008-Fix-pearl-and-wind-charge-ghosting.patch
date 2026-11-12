@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Darkmoon <darkmoon@dicall.ir>
+Date: Thu, 12 Nov 2026 08:45:10 +0330
+Subject: [PATCH] Fix pearl and wind charge ghosting
+
+
+diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
+index 7873ec4b31c0d1d4bb5c13dfbcc64ec1fb6608c9..936200d7620e1fe83eb45ddbcff86b6b6ecaab8f 100644
+--- a/net/minecraft/network/Connection.java
++++ b/net/minecraft/network/Connection.java
+@@ -962,11 +962,6 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         private static boolean canSendImmediate(final Connection connection, final net.minecraft.network.protocol.Packet<?> packet) {
+             return connection.isPending || connection.packetListener.protocol() != ConnectionProtocol.PLAY ||
+                 packet instanceof net.minecraft.network.protocol.common.ClientboundKeepAlivePacket ||
+-        // PvP Fast-Path Additions:
+-                packet instanceof net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket || // Entity Velocity (Knockback)
+-                packet instanceof net.minecraft.network.protocol.game.ClientboundAnimatePacket ||         // Animation updates (Swings/Hurt)
+-                packet instanceof net.minecraft.network.protocol.game.ClientboundMoveEntityPacket ||    // Tracking relative movement
+-                packet instanceof net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket ||  // Tracking absolute movement
+                 packet instanceof net.minecraft.network.protocol.game.ClientboundPlayerChatPacket ||
+                 packet instanceof net.minecraft.network.protocol.game.ClientboundSystemChatPacket ||
+                 packet instanceof net.minecraft.network.protocol.game.ClientboundDisguisedChatPacket ||
+diff --git a/net/minecraft/world/entity/EntityTypes.java b/net/minecraft/world/entity/EntityTypes.java
+index b1a2a8a474d5c8948b930cb237d886db64252962..b1766517215c4a8fc1c146b62fbc02814187c8d5 100644
+--- a/net/minecraft/world/entity/EntityTypes.java
++++ b/net/minecraft/world/entity/EntityTypes.java
+@@ -415,7 +415,7 @@ public class EntityTypes {
+             .noLootTable()
+             .sized(0.25F, 0.25F)
+             .clientTrackingRange(4)
+-            .updateInterval(10)
++            .updateInterval(1) // PracticePvP - send position every tick so clients see the real path
+     );
+     public static final EntityType<EndCrystal> END_CRYSTAL = register(
+         EntityTypeIds.END_CRYSTAL,
+@@ -1097,7 +1097,7 @@ public class EntityTypes {
+             .sized(0.3125F, 0.3125F)
+             .eyeHeight(0.0F)
+             .clientTrackingRange(4)
+-            .updateInterval(10)
++            .updateInterval(1) // PracticePvP - send position every tick so clients see the real path
+     );
+     public static final EntityType<Witch> WITCH = register(
+         EntityTypeIds.WITCH,
+diff --git a/net/minecraft/world/entity/projectile/ThrowableProjectile.java b/net/minecraft/world/entity/projectile/ThrowableProjectile.java
+index 761593afc6cb2ac9ec24598ecfe2c5c3f9e71c4e..dff46a733edef69d93a78f0fa08a2e323243e2fd 100644
+--- a/net/minecraft/world/entity/projectile/ThrowableProjectile.java
++++ b/net/minecraft/world/entity/projectile/ThrowableProjectile.java
+@@ -108,7 +108,8 @@ public abstract class ThrowableProjectile extends Projectile {
+         double          bestDistSq = Double.MAX_VALUE;
+ 
+         for (Entity candidate : this.level().getEntities(this, broadPhase, this::canHitEntity)) {
+-            Vec3 candidateVel = candidate.getDeltaMovement();
++            // Players are never simulated server-side, their delta movement is stale (often old knockback), use what the client reported
++            Vec3 candidateVel = candidate instanceof net.minecraft.server.level.ServerPlayer ? candidate.getKnownMovement() : candidate.getDeltaMovement();
+ 
+             // If the candidate is slow/stationary the primary raycast already handles it.
+             // Only bother with CCD for entities moving fast enough to tunnel.

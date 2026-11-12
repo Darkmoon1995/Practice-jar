@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Sun, 8 Nov 2026 19:51:08 +0330
+Subject: [PATCH] PracticePvP per-player combat settings
+
+
+diff --git a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+index 0b35a293f3436bcf8a39c4f07a88340cd9d33bcb..40b4bf44ec30ba4443381e9f3cc0b4636a4e149f 100644
+--- a/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
++++ b/src/main/java/io/papermc/paper/configuration/GlobalConfiguration.java
+@@ -180,9 +180,9 @@ public class GlobalConfiguration extends ConfigurationPart {
+         @Comment("This setting controls if players should be able to create headless pistons.")
+         public boolean allowHeadlessPistons = false;
+         @Comment("This setting controls if the vanilla damage tick should be skipped if damage was blocked via a shield.")
+-        public boolean skipVanillaDamageTickWhenShieldBlocked = false;
++        public boolean skipVanillaDamageTickWhenShieldBlocked = true;
+         @Comment("This setting controls if equipment should be updated when handling certain player actions.")
+-        public boolean updateEquipmentOnPlayerActions = true;
++        public boolean updateEquipmentOnPlayerActions = false;
+         @Comment("This setting controls what item data components don't need to be sanitized in oversized item obfuscation. Adding them re-enables exploits, but may be needed for certain resource packs. (Expected: minecraft:container, minecraft:charged_projectiles and minecraft:bundle_contents)")
+         public OversizedItemComponentSanitizer.AssetOversizedItemComponentSanitizerConfiguration oversizedItemComponentSanitizer = new OversizedItemComponentSanitizer.AssetOversizedItemComponentSanitizerConfiguration(Set.of());
+     }
+diff --git a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
+index f51f05ff0b0b55e5f4ea3b04d9d4616cbdb942f4..9817b44e6dea22800cb684b06199a81232bdb780 100644
+--- a/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
++++ b/src/main/java/org/bukkit/craftbukkit/entity/CraftPlayer.java
+@@ -2781,6 +2781,44 @@ public class CraftPlayer extends CraftHumanEntity implements Player, PluginMessa
+         return this.getHandle().allowsListing();
+     }
+ 
++    // PracticePvP start - per-player combat settings
++    private boolean skipVanillaDamageTickWhenShieldBlocked = true;
++
++    @Override
++    public boolean isSkipVanillaDamageTickWhenShieldBlocked() {
++        return this.skipVanillaDamageTickWhenShieldBlocked;
++    }
++
++    @Override
++    public void setSkipVanillaDamageTickWhenShieldBlocked(boolean skip) {
++        this.skipVanillaDamageTickWhenShieldBlocked = skip;
++    }
++
++    private boolean skipVanillaDamageTickWhenShieldBlockedPaper = io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.skipVanillaDamageTickWhenShieldBlocked;
++
++    @Override
++    public boolean isSkipVanillaDamageTickWhenShieldBlockedPaper() {
++        return this.skipVanillaDamageTickWhenShieldBlockedPaper;
++    }
++
++    @Override
++    public void setSkipVanillaDamageTickWhenShieldBlockedPaper(boolean skip) {
++        this.skipVanillaDamageTickWhenShieldBlockedPaper = skip;
++    }
++
++    private boolean updateEquipmentOnPlayerActions = false;
++
++    @Override
++    public boolean isUpdateEquipmentOnPlayerActions() {
++        return this.updateEquipmentOnPlayerActions;
++    }
++
++    @Override
++    public void setUpdateEquipmentOnPlayerActions(boolean update) {
++        this.updateEquipmentOnPlayerActions = update;
++    }
++    // PracticePvP end - per-player combat settings
++
+     // Paper start
+     @Override
+     public net.kyori.adventure.text.Component displayName() {
+diff --git a/src/main/java/org/bukkit/craftbukkit/profile/CraftPlayerProfile.java b/src/main/java/org/bukkit/craftbukkit/profile/CraftPlayerProfile.java
+index 44ce9fac2cf8b497eb9ce14cc7f15048929849fa..4c0f1b116cc39ae64c7ea8e0fa6acc106d6093e4 100644
+--- a/src/main/java/org/bukkit/craftbukkit/profile/CraftPlayerProfile.java
++++ b/src/main/java/org/bukkit/craftbukkit/profile/CraftPlayerProfile.java
+@@ -152,9 +152,12 @@ public final class CraftPlayerProfile implements PlayerProfile, com.destroystoky
+ 
+         // Look up properties such as the textures:
+         if (!profile.id().equals(Util.NIL_UUID)) {
+-            ProfileResult newProfile = server.services().sessionService().fetchProfile(profile.id(), true);
+-            if (newProfile != null) {
+-                profile = newProfile.profile();
++            try { // PracticePvP - lookup failures (e.g. Mojang rate limits) keep the profile as is instead of throwing
++                ProfileResult newProfile = server.services().sessionService().fetchProfile(profile.id(), true);
++                if (newProfile != null) {
++                    profile = newProfile.profile();
++                }
++            } catch (Exception ignored) {
+             }
+         }
+ 

@@ -1,0 +1,315 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Sun, 8 Nov 2026 19:51:03 +0330
+Subject: [PATCH] PvP networking: fast path packets, ghost block sync, fast
+ placement, unsigned chat
+
+
+diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
+index 936200d7620e1fe83eb45ddbcff86b6b6ecaab8f..7873ec4b31c0d1d4bb5c13dfbcc64ec1fb6608c9 100644
+--- a/net/minecraft/network/Connection.java
++++ b/net/minecraft/network/Connection.java
+@@ -962,6 +962,11 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
+         private static boolean canSendImmediate(final Connection connection, final net.minecraft.network.protocol.Packet<?> packet) {
+             return connection.isPending || connection.packetListener.protocol() != ConnectionProtocol.PLAY ||
+                 packet instanceof net.minecraft.network.protocol.common.ClientboundKeepAlivePacket ||
++        // PvP Fast-Path Additions:
++                packet instanceof net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket || // Entity Velocity (Knockback)
++                packet instanceof net.minecraft.network.protocol.game.ClientboundAnimatePacket ||         // Animation updates (Swings/Hurt)
++                packet instanceof net.minecraft.network.protocol.game.ClientboundMoveEntityPacket ||    // Tracking relative movement
++                packet instanceof net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket ||  // Tracking absolute movement
+                 packet instanceof net.minecraft.network.protocol.game.ClientboundPlayerChatPacket ||
+                 packet instanceof net.minecraft.network.protocol.game.ClientboundSystemChatPacket ||
+                 packet instanceof net.minecraft.network.protocol.game.ClientboundDisguisedChatPacket ||
+diff --git a/net/minecraft/network/chat/MessageSignatureCache.java b/net/minecraft/network/chat/MessageSignatureCache.java
+index 5d934160cfa48020a63be436ff376d8a1211455b..59342e7fab61a421dd146840461f39eeda2a96d3 100644
+--- a/net/minecraft/network/chat/MessageSignatureCache.java
++++ b/net/minecraft/network/chat/MessageSignatureCache.java
+@@ -35,14 +35,7 @@ public class MessageSignatureCache {
+     }
+ 
+     public void push(final SignedMessageBody body, final @Nullable MessageSignature signature) {
+-        List<MessageSignature> lastSeen = body.lastSeen().entries();
+-        ArrayDeque<MessageSignature> queue = new ArrayDeque<>(lastSeen.size() + 1);
+-        queue.addAll(lastSeen);
+-        if (signature != null) {
+-            queue.add(signature);
+-        }
+-
+-        this.push(queue);
++        return;
+     }
+ 
+     @VisibleForTesting
+@@ -51,14 +44,6 @@ public class MessageSignatureCache {
+     }
+ 
+     private void push(final ArrayDeque<MessageSignature> queue) {
+-        Set<MessageSignature> newEntries = new ObjectOpenHashSet<>(queue);
+-
+-        for (int i = 0; !queue.isEmpty() && i < this.entries.length; i++) {
+-            MessageSignature entry = this.entries[i];
+-            this.entries[i] = queue.removeLast();
+-            if (entry != null && !newEntries.contains(entry)) {
+-                queue.addFirst(entry);
+-            }
+-        }
++        return;
+     }
+ }
+diff --git a/net/minecraft/network/chat/SignedMessageValidator.java b/net/minecraft/network/chat/SignedMessageValidator.java
+index a28958b8ab09b3ffdcedba19e0063af07f177080..046975d5a5467c0c140c9449f084738b0798e0fc 100644
+--- a/net/minecraft/network/chat/SignedMessageValidator.java
++++ b/net/minecraft/network/chat/SignedMessageValidator.java
+@@ -11,8 +11,7 @@ public interface SignedMessageValidator {
+     Logger LOGGER = LogUtils.getLogger();
+     SignedMessageValidator ACCEPT_UNSIGNED = PlayerChatMessage::removeSignature;
+     SignedMessageValidator REJECT_ALL = message -> {
+-        LOGGER.error("Received chat message from {}, but they have no chat session initialized and secure chat is enforced", message.sender());
+-        return null;
++        return message.removeSignature(); // PracticePvP - accept unsigned chat
+     };
+ 
+     @Nullable PlayerChatMessage updateAndValidate(PlayerChatMessage message);
+@@ -63,13 +62,10 @@ public interface SignedMessageValidator {
+ 
+         @Override
+         public @Nullable PlayerChatMessage updateAndValidate(final PlayerChatMessage message) {
+-            this.isChainValid = this.isChainValid && this.validate(message);
+-            if (!this.isChainValid) {
+-                return null;
+-            }
+-
+             this.lastMessage = message;
+-            return message;
++            return message.removeSignature();
++
++       
+         }
+     }
+ }
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 8178922f5ecc7f6709335c7fbeb6dca505b044bb..ae5f18d68bc42f633ef83b67b689793250d6e3b5 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -1112,7 +1112,7 @@ public class ServerGamePacketListenerImpl
+ 
+             this.send(new ClientboundSetHeldSlotPacket(inventory.getSelectedSlot()));
+             this.player.inventoryMenu.broadcastChanges();
+-            if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++            if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+         }
+     }
+ 
+@@ -2039,7 +2039,7 @@ public class ServerGamePacketListenerImpl
+                         }
+                         // CraftBukkit end
+                         this.player.stopUsingItem();
+-                        if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++                        if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+                     }
+ 
+                     return;
+@@ -2061,20 +2061,20 @@ public class ServerGamePacketListenerImpl
+                         }
+                         // CraftBukkit end
+                         this.player.drop(false);
+-                        if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++                        if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+                     }
+ 
+                     return;
+                 case DROP_ALL_ITEMS:
+                     if (!this.player.isSpectator()) {
+                         this.player.drop(true);
+-                        if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++                        if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+                     }
+ 
+                     return;
+                 case RELEASE_USE_ITEM:
+                     this.player.releaseUsingItem();
+-                    if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++                    if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+                     return;
+                 case START_DESTROY_BLOCK:
+                 case CHANGE_DESTROY_DIRECTION:
+@@ -2083,6 +2083,8 @@ public class ServerGamePacketListenerImpl
+                     // Paper start - Don't allow digging into unloaded chunks
+                     if (this.player.level().getChunkIfLoadedImmediately(pos.getX() >> 4, pos.getZ() >> 4) == null || !this.player.isWithinBlockInteractionRange(pos, 1.0)) {
+                         this.player.connection.ackBlockChangesUpTo(packet.getSequence());
++                        // PracticePvP - anti ghost block: resync if chunk is unloaded or reach check fails
++                        this.send(new ClientboundBlockUpdatePacket(this.player.level(), pos));
+                         return;
+                     }
+                     // Paper end - Don't allow digging into unloaded chunks
+@@ -2108,7 +2110,7 @@ public class ServerGamePacketListenerImpl
+                         }
+                     }
+                     // Paper end - Send block entities after destroy prediction
+-                    if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++                    if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+                     return;
+                 default:
+                     throw new IllegalArgumentException("Invalid player action");
+@@ -2155,7 +2157,7 @@ public class ServerGamePacketListenerImpl
+     public void handleUseItemOn(final ServerboundUseItemOnPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+         if (this.player.isImmobile()) return; // CraftBukkit
+-        if (!this.checkLimit(packet.timestamp())) return; // Spigot - check limit
++        // if (!this.checkLimit(packet.timestamp())) return; // Spigot - check limit // PracticePvP - allow fast placement
+         if (this.hasClientLoaded()) {
+             this.ackBlockChangesUpTo(packet.sequence());
+             ServerLevel level = this.player.level();
+@@ -2232,9 +2234,17 @@ public class ServerGamePacketListenerImpl
+                             this.send(new ClientboundBlockUpdatePacket(level, pos));
+                             this.send(new ClientboundBlockUpdatePacket(level, pos.relative(direction)));
+                         }
+-                        if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++                        if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+                         // Paper - Remove unused warning
++                    } else {
++                        // PracticePvP - anti ghost block: resync when the center distance check fails
++                        this.send(new ClientboundBlockUpdatePacket(level, pos));
++                        this.send(new ClientboundBlockUpdatePacket(level, pos.relative(blockHit.getDirection())));
+                     }
++                } else {
++                    // PracticePvP - anti ghost block: resync when the interaction range check fails
++                    this.send(new ClientboundBlockUpdatePacket(level, pos));
++                    this.send(new ClientboundBlockUpdatePacket(level, pos.relative(blockHit.getDirection())));
+                 }
+             }
+         }
+@@ -2244,7 +2254,7 @@ public class ServerGamePacketListenerImpl
+     public void handleUseItem(final ServerboundUseItemPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+         if (this.player.isImmobile()) return; // CraftBukkit
+-        if (!this.checkLimit(packet.timestamp())) return; // Spigot - check limit
++        // if (!this.checkLimit(packet.timestamp())) return; // Spigot - check limit // PracticePvP - allow fast placement
+         if (this.hasClientLoaded()) {
+             this.ackBlockChangesUpTo(packet.sequence());
+             ServerLevel level = this.player.level();
+@@ -2390,7 +2400,7 @@ public class ServerGamePacketListenerImpl
+ 
+             this.player.getInventory().setSelectedSlot(packet.getSlot());
+             this.player.resetLastActionTime();
+-            if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++            if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+         } else {
+             LOGGER.warn("{} tried to set an invalid carried item", this.player.getPlainTextName());
+             this.disconnect(Component.literal("Invalid hotbar selection (Hacking?)"), org.bukkit.event.player.PlayerKickEvent.Cause.ILLEGAL_ACTION); // CraftBukkit // Paper - kick event cause
+@@ -2928,7 +2938,7 @@ public class ServerGamePacketListenerImpl
+                 CraftEventFactory.callPlayerUseUnknownEntityEvent(ServerGamePacketListenerImpl.this.player, packet.entityId(), true, net.minecraft.world.InteractionHand.MAIN_HAND, null);
+             }
+             // Paper end - PlayerUseUnknownEntityEvent
+-            if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++            if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+         }
+     }
+ 
+@@ -3021,7 +3031,7 @@ public class ServerGamePacketListenerImpl
+                 CraftEventFactory.callPlayerUseUnknownEntityEvent(ServerGamePacketListenerImpl.this.player, packet.entityId(), false, packet.hand(), packet.location());
+             }
+             // Paper end - PlayerUseUnknownEntityEvent
+-            if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++            if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+         }
+     }
+ 
+@@ -3436,7 +3446,7 @@ public class ServerGamePacketListenerImpl
+                         this.player.containerMenu.broadcastChanges();
+                     }
+                     if (packet.buttonNum() == Inventory.SLOT_OFFHAND && this.player.containerMenu != this.player.inventoryMenu) this.player.containerSynchronizer.sendOffHandSlotChange(); // Paper - update offhand data when the player is clicking in an inventory not their own as the sychronizer does not include offhand slots
+-                    if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++                    if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+                 }
+             }
+         }
+@@ -3529,7 +3539,7 @@ public class ServerGamePacketListenerImpl
+                 if (clickAccepted) {
+                     this.player.containerMenu.broadcastChanges();
+                 }
+-                if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++                if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+             }
+         }
+     }
+@@ -3587,7 +3597,7 @@ public class ServerGamePacketListenerImpl
+                 this.player.inventoryMenu.getSlot(packet.slotNum()).setByPlayer(itemStack);
+                 this.player.inventoryMenu.setRemoteSlot(packet.slotNum(), itemStack);
+                 this.player.inventoryMenu.broadcastChanges();
+-                if (io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) this.player.detectEquipmentUpdates(); // Paper - Force update attributes.
++                if (this.player.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) this.player.detectEquipmentUpdates(); // Paper - Force update attributes. // PracticePvP - per-player override
+             } else if (drop && validData) {
+                 if (this.dropSpamThrottler.isUnderThreshold()) {
+                     this.dropSpamThrottler.increment();
+diff --git a/net/minecraft/server/network/ServerLoginPacketListenerImpl.java b/net/minecraft/server/network/ServerLoginPacketListenerImpl.java
+index a1855a257c3ac801bbd371ca4508af755550d737..11c5744ac72d3649ece4a7a7154aad189f09772d 100644
+--- a/net/minecraft/server/network/ServerLoginPacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerLoginPacketListenerImpl.java
+@@ -317,13 +317,15 @@ public class ServerLoginPacketListenerImpl implements ServerLoginPacketListener,
+     }
+ 
+     // CraftBukkit start
+-    private GameProfile callPlayerPreLoginEvents(GameProfile gameprofile) throws Exception { // Paper - Add more fields to AsyncPlayerPreLoginEvent
++    // CraftBukkit start
++    private GameProfile callPlayerPreLoginEvents(GameProfile gameprofile) throws Exception {
+         // Paper start - Add Velocity IP Forwarding Support
+         if (ServerLoginPacketListenerImpl.this.velocityLoginMessageId == -1 && io.papermc.paper.configuration.GlobalConfiguration.get().proxies.velocity.enabled) {
+             this.disconnect("This server requires you to connect with Velocity.");
+             return gameprofile;
+         }
+         // Paper end - Add Velocity IP Forwarding Support
++
+         String playerName = gameprofile.name();
+         java.net.InetAddress address = ((java.net.InetSocketAddress) this.connection.getRemoteAddress()).getAddress();
+         java.util.UUID uniqueId = gameprofile.id();
+@@ -331,39 +333,22 @@ public class ServerLoginPacketListenerImpl implements ServerLoginPacketListener,
+ 
+         // Paper start - Add more fields to AsyncPlayerPreLoginEvent
+         final InetAddress rawAddress = ((InetSocketAddress) this.connection.channel.remoteAddress()).getAddress();
+-        com.destroystokyo.paper.profile.PlayerProfile profile = com.destroystokyo.paper.profile.CraftPlayerProfile.asBukkitCopy(gameprofile); // Paper - setPlayerProfileAPI
+-        AsyncPlayerPreLoginEvent asyncEvent = new AsyncPlayerPreLoginEvent(playerName, address, rawAddress, uniqueId, this.transferred, profile, this.connection.hostname, this.paperLoginConnection); // Paper
++        com.destroystokyo.paper.profile.PlayerProfile profile = com.destroystokyo.paper.profile.CraftPlayerProfile.asBukkitCopy(gameprofile);
++
++        AsyncPlayerPreLoginEvent asyncEvent = new AsyncPlayerPreLoginEvent(playerName, address, rawAddress, uniqueId, this.transferred, profile, this.connection.hostname, this.paperLoginConnection);
+         server.getPluginManager().callEvent(asyncEvent);
++
+         profile = asyncEvent.getPlayerProfile();
+-        profile.complete(true); // Paper - setPlayerProfileAPI
++        profile.complete(true);
+         gameprofile = com.destroystokyo.paper.profile.CraftPlayerProfile.asAuthlibCopy(profile);
+-        playerName = gameprofile.name();
+-        uniqueId = gameprofile.id();
+         // Paper end - Add more fields to AsyncPlayerPreLoginEvent
+ 
+-        if (PlayerPreLoginEvent.getHandlerList().getRegisteredListeners().length != 0) {
+-            final PlayerPreLoginEvent event = new PlayerPreLoginEvent(playerName, address, uniqueId);
+-            if (asyncEvent.getResult() != PlayerPreLoginEvent.Result.ALLOWED) {
+-                event.disallow(asyncEvent.getResult(), asyncEvent.kickMessage()); // Paper - Adventure
+-            }
+-            Waitable<PlayerPreLoginEvent.Result> waitable = new Waitable<>() {
+-                @Override
+-                protected PlayerPreLoginEvent.Result evaluate() {
+-                    server.getPluginManager().callEvent(event);
+-                    return event.getResult();
+-                }
+-            };
+-
+-            ServerLoginPacketListenerImpl.this.server.processQueue.add(waitable);
+-            if (waitable.get() != PlayerPreLoginEvent.Result.ALLOWED) {
+-                this.disconnect(io.papermc.paper.adventure.PaperAdventure.asVanilla(event.kickMessage())); // Paper - Adventure
+-            }
+-        } else {
++        // We now only evaluate the result of the Async event, keeping the thread fully non-blocking.
+             if (asyncEvent.getLoginResult() != AsyncPlayerPreLoginEvent.Result.ALLOWED) {
+-                this.disconnect(io.papermc.paper.adventure.PaperAdventure.asVanilla(asyncEvent.kickMessage())); // Paper - Adventure
++            this.disconnect(io.papermc.paper.adventure.PaperAdventure.asVanilla(asyncEvent.kickMessage()));
+             }
+-        }
+-        return gameprofile; // Paper - Add more fields to AsyncPlayerPreLoginEvent
++
++        return gameprofile;
+     }
+     // CraftBukkit end
+ 

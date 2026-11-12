@@ -1,0 +1,406 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Sun, 8 Nov 2026 19:51:03 +0330
+Subject: [PATCH] Faster joins without player data
+
+
+diff --git a/net/minecraft/server/network/ServerConfigurationPacketListenerImpl.java b/net/minecraft/server/network/ServerConfigurationPacketListenerImpl.java
+index 6baa9d2a8af7901d47964e6d7ad53ea7963ceeef..028e8ae3d98bc49f1e244d870acb2683f3b2fff0 100644
+--- a/net/minecraft/server/network/ServerConfigurationPacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerConfigurationPacketListenerImpl.java
+@@ -133,6 +133,7 @@ public class ServerConfigurationPacketListenerImpl extends ServerCommonPacketLis
+     }
+ 
+     private void addOptionalTasks() {
++        if (true) return; // PracticePvP - skip code of conduct and server resource pack tasks for faster joins
+         Map<String, String> codeOfConducts = this.server.getCodeOfConducts();
+         if (io.papermc.paper.event.connection.configuration.PlayerCodeOfConductSendEvent.getHandlerList().getRegisteredListeners().length > 0 || !codeOfConducts.isEmpty()) { // Paper - Code of Conduct event - Fire even if empty, if there are event listeners to potentially send one
+             this.configurationTasks.add(new ServerCodeOfConductConfigurationTask(() -> {
+diff --git a/net/minecraft/server/network/config/PrepareSpawnTask.java b/net/minecraft/server/network/config/PrepareSpawnTask.java
+index f6601bc30fa37a309923ea9883b04233f83b2c0b..d66810283bb9257d14df0dc67a56a8bfe9a252b7 100644
+--- a/net/minecraft/server/network/config/PrepareSpawnTask.java
++++ b/net/minecraft/server/network/config/PrepareSpawnTask.java
+@@ -30,7 +30,7 @@ import org.slf4j.Logger;
+ public class PrepareSpawnTask implements ConfigurationTask {
+     private static final Logger LOGGER = LogUtils.getLogger();
+     public static final ConfigurationTask.Type TYPE = new ConfigurationTask.Type("prepare_spawn");
+-    public static final int PREPARE_CHUNK_RADIUS = 3;
++    public static final int PREPARE_CHUNK_RADIUS = 0;
+     private final MinecraftServer server;
+     private final NameAndId nameAndId;
+     private final LevelLoadListener loadListener;
+@@ -176,7 +176,7 @@ public class PrepareSpawnTask implements ConfigurationTask {
+         public void cancel() {
+             this.spawnPosition.cancel(false);
+         }
+-
++        @SuppressWarnings({"removal", "deprecation"})
+         public PrepareSpawnTask.@Nullable Ready tick() {
+             if (!this.spawnPosition.isDone()) {
+                 return null;
+@@ -184,7 +184,6 @@ public class PrepareSpawnTask implements ConfigurationTask {
+ 
+             Vec3 spawnPosition = this.spawnPosition.join();
+             if (this.chunkLoadFuture == null) {
+-                // Paper start - PlayerSpawnLocationEvent
+                 if (this.eventFuture == null && org.spigotmc.event.player.PlayerSpawnLocationEvent.getHandlerList().getRegisteredListeners().length != 0) {
+                     ServerPlayer player;
+                     if (PrepareSpawnTask.this.listener.connection.savedPlayerForLegacyEvents != null) {
+@@ -231,9 +230,10 @@ public class PrepareSpawnTask implements ConfigurationTask {
+                     this.spawnPosition = CompletableFuture.completedFuture(spawnPosition);
+                     this.spawnAngle = new Vec2(location.getYaw(), location.getPitch());
+                 }
+-                // Paper end - PlayerSpawnLocationEvent
+                 ChunkPos spawnChunk = ChunkPos.containing(BlockPos.containing(spawnPosition));
+-                this.chunkLoadFuture = ((ca.spottedleaf.moonrise.patches.chunk_system.MoonriseChunkLoadCounter)this.chunkLoadCounter).trackLoadWithRadius(this.spawnLevel, spawnChunk, 3, net.minecraft.world.level.chunk.status.ChunkStatus.FULL, ca.spottedleaf.concurrentutil.util.Priority.HIGH, () -> { Preparing.this.spawnLevel.getChunkSource().addTicketWithRadius(TicketType.PLAYER_SPAWN, spawnChunk, 3); }); // Paper - rewrite chunk system
++
++                this.chunkLoadFuture = ((ca.spottedleaf.moonrise.patches.chunk_system.MoonriseChunkLoadCounter)this.chunkLoadCounter).trackLoadWithRadius(this.spawnLevel, spawnChunk, PREPARE_CHUNK_RADIUS, net.minecraft.world.level.chunk.status.ChunkStatus.FULL, ca.spottedleaf.concurrentutil.util.Priority.HIGH, () -> { Preparing.this.spawnLevel.getChunkSource().addTicketWithRadius(TicketType.PLAYER_SPAWN, spawnChunk, PREPARE_CHUNK_RADIUS); });
++
+                 PrepareSpawnTask.this.loadListener.start(LevelLoadListener.Stage.LOAD_PLAYER_CHUNKS, this.chunkLoadCounter.totalChunks());
+                 PrepareSpawnTask.this.loadListener.updateFocus(this.spawnLevel.dimension(), spawnChunk);
+             }
+@@ -261,12 +261,12 @@ public class PrepareSpawnTask implements ConfigurationTask {
+         }
+ 
+         public void keepAlive() {
+-            this.spawnLevel.getChunkSource().addTicketWithRadius(TicketType.PLAYER_SPAWN, ChunkPos.containing(BlockPos.containing(this.spawnPosition)), 3);
++            this.spawnLevel.getChunkSource().addTicketWithRadius(TicketType.PLAYER_SPAWN, ChunkPos.containing(BlockPos.containing(this.spawnPosition)), PREPARE_CHUNK_RADIUS); // PracticePvP
+         }
+ 
+         public ServerPlayer spawn(final Connection connection, final CommonListenerCookie cookie) {
+             ChunkPos spawnChunk = ChunkPos.containing(BlockPos.containing(this.spawnPosition));
+-            this.spawnLevel.waitForEntities(spawnChunk, 3);
++            this.spawnLevel.waitForEntities(spawnChunk, PREPARE_CHUNK_RADIUS); // PracticePvP
+             // Paper start - configuration api - possibly use legacy saved server player instance
+             ServerPlayer player;
+             if (connection.savedPlayerForLegacyEvents != null) {
+diff --git a/net/minecraft/server/network/config/SynchronizeRegistriesTask.java b/net/minecraft/server/network/config/SynchronizeRegistriesTask.java
+index 655ed9a8a99f772c702c423fddcb5d2751f73810..bb466487cf325202e568aa5aeac24d923b2d2f6e 100644
+--- a/net/minecraft/server/network/config/SynchronizeRegistriesTask.java
++++ b/net/minecraft/server/network/config/SynchronizeRegistriesTask.java
+@@ -1,6 +1,7 @@
+ package net.minecraft.server.network.config;
+ 
+ import com.mojang.serialization.DynamicOps;
++import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Set;
+ import java.util.function.Consumer;
+@@ -22,6 +23,12 @@ public class SynchronizeRegistriesTask implements ConfigurationTask {
+     private final List<KnownPack> requestedPacks;
+     private final LayeredRegistryAccess<RegistryLayer> registries;
+ 
++    // PracticePvP start - cached registry packets
++    private static volatile List<Packet<?>> CACHED_MATCHED_PACKETS = null;
++    private static volatile List<Packet<?>> CACHED_EMPTY_PACKETS = null;
++    private static volatile ClientboundUpdateTagsPacket CACHED_TAGS_PACKET = null;
++    // PracticePvP end
++
+     public SynchronizeRegistriesTask(final List<KnownPack> knownPacks, final LayeredRegistryAccess<RegistryLayer> registries) {
+         this.requestedPacks = knownPacks;
+         this.registries = registries;
+@@ -33,14 +40,41 @@ public class SynchronizeRegistriesTask implements ConfigurationTask {
+     }
+ 
+     private void sendRegistries(final Consumer<Packet<?>> connection, final Set<KnownPack> negotiatedPacks) {
+-        DynamicOps<Tag> ops = this.registries.compositeAccess().createSerializationContext(NbtOps.INSTANCE);
+-        RegistrySynchronization.packRegistries(
+-            ops,
+-            this.registries.getAccessFrom(RegistryLayer.WORLD),
+-            negotiatedPacks,
+-            (registryKey, entries) -> connection.accept(new ClientboundRegistryDataPacket(registryKey, entries))
+-        );
+-        connection.accept(new ClientboundUpdateTagsPacket(TagNetworkSerialization.serializeTagsToNetwork(this.registries)));
++        // PracticePvP start - cache the registry and tag packets, they are identical for every joining player
++        boolean isMatched = !negotiatedPacks.isEmpty();
++        List<Packet<?>> cachedPackets = isMatched ? CACHED_MATCHED_PACKETS : CACHED_EMPTY_PACKETS;
++        if (cachedPackets == null) {
++            synchronized (SynchronizeRegistriesTask.class) {
++                cachedPackets = isMatched ? CACHED_MATCHED_PACKETS : CACHED_EMPTY_PACKETS;
++                if (cachedPackets == null) {
++                    List<Packet<?>> generated = new ArrayList<>();
++                    DynamicOps<Tag> ops = this.registries.compositeAccess().createSerializationContext(NbtOps.INSTANCE);
++                    RegistrySynchronization.packRegistries(
++                        ops,
++                        this.registries.getAccessFrom(RegistryLayer.WORLD),
++                        negotiatedPacks,
++                        (registryKey, entries) -> generated.add(new ClientboundRegistryDataPacket(registryKey, entries))
++                    );
++                    cachedPackets = List.copyOf(generated);
++                    if (isMatched) {
++                        CACHED_MATCHED_PACKETS = cachedPackets;
++                    } else {
++                        CACHED_EMPTY_PACKETS = cachedPackets;
++                    }
++                }
++            }
++        }
++        cachedPackets.forEach(connection);
++
++        if (CACHED_TAGS_PACKET == null) {
++            synchronized (SynchronizeRegistriesTask.class) {
++                if (CACHED_TAGS_PACKET == null) {
++                    CACHED_TAGS_PACKET = new ClientboundUpdateTagsPacket(TagNetworkSerialization.serializeTagsToNetwork(this.registries));
++                }
++            }
++        }
++        connection.accept(CACHED_TAGS_PACKET);
++        // PracticePvP end
+     }
+ 
+     public void handleResponse(final List<KnownPack> acceptedPacks, final Consumer<Packet<?>> connection) {
+diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
+index 62f57eb254321902692550d0a86c24292ef9e87d..372b860106dd05519d40538b9e69e9e782275ec9 100644
+--- a/net/minecraft/server/players/PlayerList.java
++++ b/net/minecraft/server/players/PlayerList.java
+@@ -116,7 +116,7 @@ public abstract class PlayerList {
+     private static final SimpleDateFormat BAN_DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd 'at' HH:mm:ss z", Locale.ROOT);
+     private final MinecraftServer server;
+     private final List<ServerPlayer> players = new java.util.concurrent.CopyOnWriteArrayList(); // CraftBukkit - ArrayList -> CopyOnWriteArrayList: Iterator safety
+-    private final Map<UUID, ServerPlayer> playersByUUID = Maps.newHashMap();
++    private final Map<UUID, ServerPlayer> playersByUUID = new java.util.concurrent.ConcurrentHashMap<>(); // PracticePvP
+     private final Map<NameAndId, PermissionLevel> playerPermissions = Maps.newHashMap();
+     private final UserBanList bans;
+     private final IpBanList ipBans;
+@@ -134,7 +134,7 @@ public abstract class PlayerList {
+ 
+     // CraftBukkit start
+     private org.bukkit.craftbukkit.CraftServer cserver;
+-    private final Map<String,ServerPlayer> playersByName = new java.util.HashMap<>();
++    private final Map<String,ServerPlayer> playersByName = new java.util.concurrent.ConcurrentHashMap<>(); // PracticePvP
+     public @Nullable String collideRuleTeamName; // Paper - Configurable player collision
+ 
+     public PlayerList(
+@@ -406,6 +406,7 @@ public abstract class PlayerList {
+     }
+ 
+     public Optional<CompoundTag> loadPlayerData(final NameAndId nameAndId) {
++        if (true) return Optional.empty(); // PracticePvP - never load player data
+         UUID lastSingleplayerOwnerUUID = this.server.getWorldData().getSinglePlayerUUID();
+         if (this.server.isSingleplayerOwner(nameAndId) && lastSingleplayerOwnerUUID != null) {
+             LOGGER.debug("loading single player");
+@@ -416,6 +417,7 @@ public abstract class PlayerList {
+     }
+ 
+     protected void save(final ServerPlayer player) {
++        if (true) return; // PracticePvP - never save player data, stats or advancements
+         if (!player.getBukkitEntity().isPersistent()) return; // CraftBukkit
+         player.lastSave = MinecraftServer.currentTick; // Paper - Incremental chunk and player saving
+         this.playerIo.save(player);
+@@ -960,6 +962,7 @@ public abstract class PlayerList {
+         this.saveAll(-1);
+     }
+     public void saveAll(final int interval) {
++        if (true) return; // PracticePvP - never save player data
+         // Paper end - Incremental chunk and player saving
+         io.papermc.paper.util.MCUtil.ensureMain("Save Players" , () -> { // Paper - Ensure main
+         // Paper start - Incremental chunk and player saving
+diff --git a/net/minecraft/stats/ServerStatsCounter.java b/net/minecraft/stats/ServerStatsCounter.java
+index f5beb001b938072e78c0ead7e0ad0499784ed1cf..fba636bf9e103891d38ecd0e54c414cdacd1524d 100644
+--- a/net/minecraft/stats/ServerStatsCounter.java
++++ b/net/minecraft/stats/ServerStatsCounter.java
+@@ -1,149 +1,41 @@
+ package net.minecraft.stats;
+ 
+-import com.google.common.collect.Sets;
+-import com.google.gson.Gson;
+-import com.google.gson.GsonBuilder;
+-import com.google.gson.JsonElement;
+-import com.google.gson.JsonIOException;
+-import com.google.gson.JsonObject;
+-import com.google.gson.JsonParseException;
+-import com.mojang.datafixers.DataFixer;
+-import com.mojang.logging.LogUtils;
+-import com.mojang.serialization.Codec;
+-import com.mojang.serialization.DataResult;
+-import com.mojang.serialization.Dynamic;
+-import com.mojang.serialization.JsonOps;
+-import it.unimi.dsi.fastutil.objects.Object2IntMap;
+-import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
+-import java.io.IOException;
+-import java.io.Reader;
+-import java.io.Writer;
+-import java.nio.charset.StandardCharsets;
+-import java.nio.file.Files;
+ import java.nio.file.Path;
+-import java.util.HashMap;
+-import java.util.Map;
+-import java.util.Set;
+-import java.util.stream.Collectors;
+-import net.minecraft.SharedConstants;
+-import net.minecraft.core.registries.BuiltInRegistries;
+-import net.minecraft.nbt.NbtUtils;
++
+ import net.minecraft.network.protocol.game.ClientboundAwardStatsPacket;
+ import net.minecraft.server.MinecraftServer;
+ import net.minecraft.server.level.ServerPlayer;
+-import net.minecraft.util.FileUtil;
+-import net.minecraft.util.StrictJsonParser;
+-import net.minecraft.util.Util;
+-import net.minecraft.util.datafix.DataFixTypes;
+ import net.minecraft.world.entity.player.Player;
+-import org.slf4j.Logger;
+ 
+ public class ServerStatsCounter extends StatsCounter {
+-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+-    private static final Logger LOGGER = LogUtils.getLogger();
+-    private static final Codec<Map<Stat<?>, Integer>> STATS_CODEC = Codec.dispatchedMap(
+-            BuiltInRegistries.STAT_TYPE.byNameCodec(), Util.memoize(ServerStatsCounter::createTypedStatsCodec)
+-        )
+-        .xmap(groupedStats -> {
+-            Map<Stat<?>, Integer> stats = new HashMap<>();
+-            groupedStats.forEach((type, values) -> stats.putAll((Map<? extends Stat<?>, ? extends Integer>)values));
+-            return stats;
+-        }, map -> map.entrySet().stream().collect(Collectors.groupingBy(entry -> entry.getKey().getType(), Util.toMap())));
+-    private final Path file;
+-    private final Set<Stat<?>> dirty = Sets.newHashSet();
+-
+-    private static <T> Codec<Map<Stat<?>, Integer>> createTypedStatsCodec(final StatType<T> type) {
+-        Codec<T> valueCodec = type.getRegistry().byNameCodec();
+-        Codec<Stat<?>> statCodec = valueCodec.flatComapMap(
+-            type::get,
+-            stat -> stat.getType() == type
+-                ? DataResult.success((T)stat.getValue())
+-                : DataResult.error(() -> "Expected type " + type + ", but got " + stat.getType())
+-        );
+-        return Codec.unboundedMap(statCodec, Codec.INT);
+-    }
+ 
+     public ServerStatsCounter(final MinecraftServer server, final Path file) {
+-        this.file = file;
+-        if (Files.isRegularFile(file)) {
+-            try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+-                JsonElement element = StrictJsonParser.parse(reader);
+-                this.parse(server.getFixerUpper(), element);
+-            } catch (IOException e) {
+-                LOGGER.error("Couldn't read statistics file {}", file, e);
+-            } catch (JsonParseException e) {
+-                LOGGER.error("Couldn't parse statistics file {}", file, e);
+-            }
+-        }
+-        // Paper start - Moved after stat fetching for player state file
+-        // Moves the loading after vanilla loading, so it overrides the values.
+-        // Disables saving any forced stats, so it stays at the same value (without enabling disableStatSaving)
+-        // Fixes stat initialization to not cause a NullPointerException
+-        // Spigot start
+-        for (Map.Entry<net.minecraft.resources.Identifier, Integer> entry : org.spigotmc.SpigotConfig.forcedStats.entrySet()) {
+-            Stat<net.minecraft.resources.Identifier> wrapper = Stats.CUSTOM.get(java.util.Objects.requireNonNull(BuiltInRegistries.CUSTOM_STAT.getValue(entry.getKey()))); // Paper - ensured by SpigotConfig#stats
+-            this.stats.put(wrapper, entry.getValue().intValue());
+-        }
+-        // Spigot end
+-        // Paper end - Moved after stat fetching for player state file
+-    }
+-
+-    public void save() {
+-        if (org.spigotmc.SpigotConfig.disableStatSaving) return; // Spigot
+-        try {
+-            FileUtil.createDirectoriesSafe(this.file.getParent());
+-
+-            try (Writer writer = Files.newBufferedWriter(this.file, StandardCharsets.UTF_8)) {
+-                GSON.toJson(this.toJson(), GSON.newJsonWriter(writer));
+-            }
+-        } catch (IOException | JsonIOException e) {
+-            LOGGER.error("Couldn't save stats to {}", this.file, e);
+-        }
++        // Disable stat loading
+     }
+ 
+     @Override
+     public void setValue(final Player player, final Stat<?> stat, final int count) {
+-        if (org.spigotmc.SpigotConfig.disableStatSaving) return; // Spigot
+-        if (stat.getType() == Stats.CUSTOM && stat.getValue() instanceof final net.minecraft.resources.Identifier key && org.spigotmc.SpigotConfig.forcedStats.get(key) != null) return; // Paper - disable saving forced stats
+-        super.setValue(player, stat, count);
+-        this.dirty.add(stat);
++        // Disable stat updates
+     }
+ 
+-    private Set<Stat<?>> getDirty() {
+-        Set<Stat<?>> result = Sets.newHashSet(this.dirty);
+-        this.dirty.clear();
+-        return result;
++    public void save() {
++        // Disable stat saving
+     }
+ 
+-    public void parse(final DataFixer fixerUpper, final JsonElement element) {
+-        Dynamic<JsonElement> data = new Dynamic<>(JsonOps.INSTANCE, element);
+-        data = DataFixTypes.STATS.updateToCurrentVersion(fixerUpper, data, NbtUtils.getDataVersion(data, 1343));
+-        this.stats
+-            .putAll(
+-                STATS_CODEC.parse(data.get("stats").orElseEmptyMap())
+-                    .resultOrPartial(error -> LOGGER.error("Failed to parse statistics for {}: {}", this.file, error))
+-                    .orElse(Map.of())
+-            );
++    public void parse(final com.mojang.datafixers.DataFixer fixerUpper,
++                      final com.google.gson.JsonElement element) {
++        // Disable stat parsing
+     }
+ 
+-    protected JsonElement toJson() {
+-        JsonObject result = new JsonObject();
+-        result.add("stats", STATS_CODEC.encodeStart(JsonOps.INSTANCE, this.stats).getOrThrow());
+-        result.addProperty("DataVersion", SharedConstants.getCurrentVersion().dataVersion().version());
+-        return result;
++    protected com.google.gson.JsonElement toJson() {
++        return new com.google.gson.JsonObject();
+     }
+ 
+     public void markAllDirty() {
+-        this.dirty.addAll(this.stats.keySet());
++        // Do nothing
+     }
+ 
+     public void sendStats(final ServerPlayer player) {
+-        Object2IntMap<Stat<?>> statsToSend = new Object2IntOpenHashMap<>();
+-
+-        for (Stat<?> stat : this.getDirty()) {
+-            statsToSend.put(stat, this.getValue(stat));
+-        }
+-
+-        player.connection.send(new ClientboundAwardStatsPacket(statsToSend));
++        // Never send stats packet
+     }
+ }
+diff --git a/net/minecraft/world/level/storage/PlayerDataStorage.java b/net/minecraft/world/level/storage/PlayerDataStorage.java
+index 142a34eb046c87f16b73023c83218d8752922fbe..7f5b833372c09e1057958868043378d2765d0e8d 100644
+--- a/net/minecraft/world/level/storage/PlayerDataStorage.java
++++ b/net/minecraft/world/level/storage/PlayerDataStorage.java
+@@ -31,20 +31,7 @@ public class PlayerDataStorage {
+     }
+ 
+     public void save(final Player player) {
+-        if (org.spigotmc.SpigotConfig.disablePlayerDataSaving) return; // Spigot
+-        try (ProblemReporter.ScopedCollector reporter = new ProblemReporter.ScopedCollector(player.problemPath(), LOGGER)) {
+-            TagValueOutput output = TagValueOutput.createWithContext(reporter, player.registryAccess());
+-            player.saveWithoutId(output);
+-            Path playerDirPath = this.playerDir.toPath();
+-            Path tmpFile = Files.createTempFile(playerDirPath, player.getStringUUID() + "-", ".dat");
+-            CompoundTag dataToStore = output.buildResult();
+-            NbtIo.writeCompressed(dataToStore, tmpFile);
+-            Path realFile = playerDirPath.resolve(player.getStringUUID() + ".dat");
+-            Path oldFile = playerDirPath.resolve(player.getStringUUID() + ".dat_old");
+-            Util.safeReplaceFile(realFile, tmpFile, oldFile);
+-        } catch (Exception ignored) {
+-            LOGGER.warn("Failed to save player data for {}", player.getPlainTextName(), ignored); // Paper - Print exception
+-        }
++        // PracticePvP - never save player data
+     }
+ 
+     private void backup(final NameAndId nameAndId, final String suffix) {
+@@ -91,15 +78,7 @@ public class PlayerDataStorage {
+     }
+ 
+     public Optional<CompoundTag> load(final NameAndId nameAndId) {
+-        Optional<CompoundTag> optTag = this.load(nameAndId, ".dat");
+-        if (optTag.isEmpty()) {
+-            this.backup(nameAndId, ".dat");
+-        }
+-
+-        return optTag.or(() -> this.load(nameAndId, ".dat_old")).map(tag -> {
+-            int version = NbtUtils.getDataVersion(tag);
+-            return ca.spottedleaf.dataconverter.minecraft.MCDataConverter.convertTag(ca.spottedleaf.dataconverter.minecraft.datatypes.MCTypeRegistry.PLAYER, DataFixTypes.PLAYER, tag, version, ca.spottedleaf.dataconverter.minecraft.util.Version.getCurrentVersion());
+-        });
++        return Optional.empty(); // PracticePvP - never load player data
+     }
+ 
+     // CraftBukkit start

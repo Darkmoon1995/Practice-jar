@@ -1,0 +1,519 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Sun, 8 Nov 2026 19:51:03 +0330
+Subject: [PATCH] PvP combat: knockback sync, shield stun, projectiles and
+ durability
+
+
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 23297b54c74684765f90e9e599d051a44357e9a5..85e3e148449b0ad40a6dd295273d82f6e4f4e63c 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -156,6 +156,15 @@ import org.bukkit.event.entity.EntityResurrectEvent;
+ 
+ public abstract class LivingEntity extends Entity implements Attackable, WaypointTransmitter {
+     private static final Logger LOGGER = LogUtils.getLogger();
++    // PracticePvP start - KnockbackSync
++    public  static volatile boolean KB_SYNC_ENABLED        = true;
++    private static final long   KB_SYNC_PING_OFFSET        = 25L;
++    private static final long   KB_SYNC_SPIKE_THRESHOLD    = 20L;
++    private static final double KB_SYNC_MAX_GROUND_DIST    = 1.3;
++    private static final int    KB_SYNC_MAX_FALL_TICKS     = 20;
++    private static final double KB_SYNC_TERMINAL_VELOCITY  = 3.92;
++    private static final double KB_SYNC_VELOCITY_MULT      = 0.98;
++    // PracticePvP end - KnockbackSync
+     private static final String TAG_ACTIVE_EFFECTS = "active_effects";
+     public static final String TAG_ATTRIBUTES = "attributes";
+     public static final String TAG_SLEEPING_POS = "sleeping_pos";
+@@ -285,6 +294,10 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+     protected @Nullable ItemStack autoSpinAttackItemStack;
+     protected @Nullable Object2LongMap<Entity> recentKineticEnemies;
+     private float swimAmount;
++    // PracticePvP start - KnockbackSync: per-entity ping snapshot (meaningful only on ServerPlayer instances)
++    private transient long kbSyncPingMs     = -1L;
++    private transient long kbSyncPrevPingMs = -1L;
++    // PracticePvP end - KnockbackSync
+     private float swimAmountO;
+     protected Brain<?> brain;
+     protected boolean skipDropExperience;
+@@ -1501,11 +1514,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             }
+             if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
+             this.lastHurt = damage;
++            // PracticePvP start - shield stun: skip the damage tick on a shield block if enabled for this player
++            if (blocked && this.practicePvPSkipDamageTickOnShieldBlock()) {
++                this.damageCooldownTime = 0;
++                this.hurtDuration = 0;
++                this.hurtTime = 0;
++            } else {
+             this.damageCooldownTime = this.invulnerableDuration; // CraftBukkit - restore use of maxNoDamageTicks
+             // this.actuallyHurt(level, source, damage);
+             // CraftBukkit end
+             this.hurtDuration = 10;
+             this.hurtTime = this.hurtDuration;
++            }
++            // PracticePvP end - shield stun
+         }
+ 
+         this.resolveMobResponsibleForDamage(source);
+@@ -2076,9 +2097,16 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             }
+ 
+             Vec3 deltaVector = new Vec3(xd, 0.0, zd).normalize().scale(power);
++            // PracticePvP start - KnockbackSync: use the on-ground Y formula when the victim is on the ground client-side
++            boolean onGround = this.onGround();
++            if (!onGround && KB_SYNC_ENABLED && this instanceof ServerPlayer victim && attacker instanceof ServerPlayer) {
++                this.kbSyncCapturePing();
++                onGround = this.kbSyncIsOnGroundClientSide(victim, deltaMovement.y);
++            }
++            // PracticePvP end - KnockbackSync
+             Vec3 targetMovement = new Vec3( // Paper - knockback events
+                 deltaMovement.x / 2.0 - deltaVector.x,
+-                this.onGround() ? Math.min(0.4, deltaMovement.y / 2.0 + power) : deltaMovement.y,
++                onGround ? Math.min(0.4, deltaMovement.y / 2.0 + power) : deltaMovement.y, // PracticePvP - KnockbackSync
+                 deltaMovement.z / 2.0 - deltaVector.z
+             );
+             // Paper start - knockback events
+@@ -2572,7 +2600,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                         CriteriaTriggers.PLAYER_HURT_ENTITY.trigger(sourcePlayer, this, source, originalDamage, dmg, true); // Paper - fix taken/dealt param order
+                     }
+ 
+-                    return !io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.skipVanillaDamageTickWhenShieldBlocked; // Paper - this should always return true, however expose an unsupported setting to flip this to false to enable "shield stunning".
++                    return !this.practicePvPSkipDamageTickOnShieldBlockPaper(); // PracticePvP - per-player override for Paper's shield block patch
+                 } else {
+                     return true; // Paper - return false ONLY if event was cancelled
+                 }
+@@ -3856,7 +3884,41 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 if (freeFallInterval % 2 == 0) {
+                     List<EquipmentSlot> slotsWithGliders = EquipmentSlot.VALUES.stream().filter(slot -> canGlideUsing(this.getItemBySlot(slot), slot)).toList();
+                     EquipmentSlot slotToDamage = Util.getRandom(slotsWithGliders, this.random);
+-                    this.getItemBySlot(slotToDamage).hurtAndBreak(1, this, slotToDamage);
++                    net.minecraft.world.item.ItemStack elytra = this.getItemBySlot(slotToDamage);
++                    
++                    // ASPAPER: Consistent Elytra Decay
++                    // The plugin used to apply 0.05 damage per move event (~20 ticks/sec = 1 durability/sec).
++                    // This block runs every 10 ticks (0.5 seconds), so we expect exactly 0.5 damage.
++                    double expectedDamage = 0.5d;
++
++                    // Account for unbreaking
++                    int unbreakingLevel = 0;
++                    net.minecraft.world.item.enchantment.ItemEnchantments enchantments = elytra.getOrDefault(net.minecraft.core.component.DataComponents.ENCHANTMENTS, net.minecraft.world.item.enchantment.ItemEnchantments.EMPTY);
++                    for (it.unimi.dsi.fastutil.objects.Object2IntMap.Entry<net.minecraft.core.Holder<net.minecraft.world.item.enchantment.Enchantment>> entry : enchantments.entrySet()) {
++                        if (entry.getKey().is(net.minecraft.world.item.enchantment.Enchantments.UNBREAKING)) {
++                            unbreakingLevel = entry.getIntValue();
++                            break;
++                        }
++                    }
++                    if (unbreakingLevel > 0) {
++                        expectedDamage = expectedDamage * (1.0d / (unbreakingLevel + 1));
++                    }
++                    
++                    net.minecraft.world.item.component.CustomData customData = elytra.getOrDefault(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.EMPTY);
++                    double storedFrac = 0.0;
++                    net.minecraft.nbt.CompoundTag tag = customData.copyTag();
++                    if (tag.contains("FractionalDamage")) {
++                        storedFrac = tag.getDoubleOr("FractionalDamage", 0.0);
++                    }
++                    
++                    double newFrac = storedFrac + expectedDamage;
++                    int intDmg = (int) newFrac;
++                    tag.putDouble("FractionalDamage", newFrac - intDmg);
++                    elytra.set(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.of(tag));
++                    
++                    if (intDmg > 0) {
++                        elytra.hurtAndBreak(intDmg, this, slotToDamage);
++                    }
+                 }
+ 
+                 this.gameEvent(GameEvent.ELYTRA_GLIDE);
+@@ -5036,4 +5098,154 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             return this.currentSwing != null;
+         }
+     }
++    // PracticePvP start - shield stun
++    private static boolean practicePvPWearsArmor(final ServerPlayer player, final String material) {
++        for (ItemStack armor : player.getInventory().getArmorContents()) {
++            if (!armor.isEmpty() && net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(armor.getItem()).getPath().contains(material)) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    // Vanilla damage tick on a shield block: skipped for diamond or netherite armor, otherwise per-player setting
++    private boolean practicePvPSkipDamageTickOnShieldBlock() {
++        if (this instanceof ServerPlayer player) {
++            return practicePvPWearsArmor(player, "diamond") || practicePvPWearsArmor(player, "netherite") || player.getBukkitEntity().isSkipVanillaDamageTickWhenShieldBlocked();
++        }
++        return io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.skipVanillaDamageTickWhenShieldBlocked;
++    }
++
++    // Paper's shield block patch: skipped for diamond armor, kept for netherite, otherwise per-player setting
++    private boolean practicePvPSkipDamageTickOnShieldBlockPaper() {
++        if (this instanceof ServerPlayer player) {
++            if (practicePvPWearsArmor(player, "diamond")) return true;
++            if (practicePvPWearsArmor(player, "netherite")) return false;
++            return player.getBukkitEntity().isSkipVanillaDamageTickWhenShieldBlockedPaper();
++        }
++        return io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.skipVanillaDamageTickWhenShieldBlocked;
++    }
++    // PracticePvP end - shield stun
++
++    // PracticePvP start - KnockbackSync helpers
++    /**
++     * Snapshots the current latency of this player for the next ground check.
++     */
++    public void kbSyncCapturePing() {
++        if (!(this instanceof ServerPlayer sp)) return;
++        long raw = sp.connection.latency();
++        this.kbSyncPrevPingMs = (this.kbSyncPingMs >= 0) ? this.kbSyncPingMs : raw;
++        this.kbSyncPingMs = raw;
++    }
++
++    /**
++     * Ping with a constant offset, ignoring sudden spikes over the previous sample.
++     */
++    private long kbSyncGetEstimatedPing(final ServerPlayer victim) {
++        long current = (this.kbSyncPingMs >= 0) ? this.kbSyncPingMs : (long) victim.connection.latency();
++        long previous = (this.kbSyncPrevPingMs >= 0) ? this.kbSyncPrevPingMs : current;
++        long ping = ((current - previous) > KB_SYNC_SPIKE_THRESHOLD) ? previous : current;
++        return Math.max(1L, ping - KB_SYNC_PING_OFFSET);
++    }
++
++    /**
++     * Distance from the feet to the closest solid surface below any bounding box corner, up to 5 blocks.
++     */
++    private double kbSyncGetDistanceToGround(final ServerPlayer victim) {
++        double collisionDist = 5.0;
++        AABB bb = victim.getBoundingBox();
++        double playerY = victim.getY();
++        double adj = 0.01; // inset to avoid clipping walls
++        double[] xs = { bb.minX + adj, bb.maxX - adj };
++        double[] zs = { bb.minZ + adj, bb.maxZ - adj };
++
++        for (double cx : xs) {
++            for (double cz : zs) {
++                Vec3 start = new Vec3(cx, playerY, cz);
++                Vec3 end = new Vec3(cx, playerY - 5.0, cz);
++                HitResult hit = this.level().clip(new ClipContext(start, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, victim));
++                if (hit.getType() == HitResult.Type.BLOCK) {
++                    double dist = playerY - hit.getLocation().y;
++                    if (dist < collisionDist) collisionDist = dist;
++                }
++            }
++        }
++        return collisionDist;
++    }
++
++    /**
++     * Ticks until an upward velocity reaches its peak.
++     */
++    private int kbSyncCalcTimeToPeak(double velocity, final double gravity) {
++        int ticks = 0;
++        while (velocity > 0.0 && ticks <= KB_SYNC_MAX_FALL_TICKS) {
++            velocity = (velocity - gravity) * KB_SYNC_VELOCITY_MULT;
++            ticks++;
++        }
++        return ticks;
++    }
++
++    /**
++     * Height gained while rising for {@code ticks} ticks from {@code velocity}.
++     */
++    private double kbSyncCalcDistanceTraveled(double velocity, final int ticks, final double gravity) {
++        double total = 0.0;
++        for (int i = 0; i < ticks && velocity > 0.0; i++) {
++            total += velocity;
++            velocity = (velocity - gravity) * KB_SYNC_VELOCITY_MULT;
++        }
++        return total;
++    }
++
++    /**
++     * Ticks to fall {@code distance} blocks from a downward speed of {@code initialVelocity},
++     * or -1 past {@link #KB_SYNC_MAX_FALL_TICKS}.
++     */
++    private int kbSyncCalcFallTime(final double initialVelocity, double distance, final double gravity) {
++        double velocity = Math.abs(initialVelocity);
++        int ticks = 0;
++        while (distance > 0.0) {
++            if (ticks > KB_SYNC_MAX_FALL_TICKS) return -1;
++            velocity = Math.min((velocity + gravity) * KB_SYNC_VELOCITY_MULT, KB_SYNC_TERMINAL_VELOCITY);
++            distance -= velocity;
++            ticks++;
++        }
++        return ticks;
++    }
++
++    /**
++     * True if {@code victim} has already landed on their client but the server has not seen it yet,
++     * so the knockback should use the on-ground Y formula.
++     *
++     * @param victim the player receiving knockback
++     * @param serverYVelocity the server-side Y velocity, used when the client velocity is unknown
++     */
++    private boolean kbSyncIsOnGroundClientSide(final ServerPlayer victim, final double serverYVelocity) {
++        if (victim.onGround()) return false;
++        if (victim.isFallFlying()) return false;
++        if (victim.isInWater() || victim.isInLava()) return false;
++
++        long estimatedPing = this.kbSyncGetEstimatedPing(victim);
++        double gDist = this.kbSyncGetDistanceToGround(victim);
++        if (gDist <= 0.0 || gDist > KB_SYNC_MAX_GROUND_DIST) return false;
++
++        // The server never simulates player velocity, use what the client last reported
++        Vec3 known = victim.getKnownMovement();
++        double yVelocity = known.isFinite() ? known.y : serverYVelocity;
++        double gravity = victim.getGravity();
++
++        int tRise = 0;
++        double rise = 0.0;
++        if (yVelocity > 0.0) {
++            tRise = this.kbSyncCalcTimeToPeak(yVelocity, gravity);
++            rise = this.kbSyncCalcDistanceTraveled(yVelocity, tRise, gravity);
++            yVelocity = 0.0; // falls from the peak
++        }
++        int tFall = this.kbSyncCalcFallTime(yVelocity, rise + gDist, gravity);
++        if (tFall == -1) return false;
++
++        // Both are ticks, 50ms each
++        return estimatedPing >= (tRise + tFall) * 50L;
++    }
++    // PracticePvP end - KnockbackSync helpers
+ }
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index 4068dc1cea4edca196dc0c58b4804e94dd07881e..34a50bd98572baea54df81e419b2e3a6c213029b 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -1988,7 +1988,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+     public void detectEquipmentUpdates() {
+         super.detectEquipmentUpdates();
+ 
+-        if (!io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) {
++        if (this instanceof ServerPlayer sp && !sp.getBukkitEntity().isUpdateEquipmentOnPlayerActions()) { // PracticePvP - per-player override
+             return;
+         }
+ 
+diff --git a/net/minecraft/world/entity/projectile/Projectile.java b/net/minecraft/world/entity/projectile/Projectile.java
+index 089dd82e6806f4f1fbff554058dc44f15593e37f..749fef9d3216f80948dc1fc25e9222076465de8d 100644
+--- a/net/minecraft/world/entity/projectile/Projectile.java
++++ b/net/minecraft/world/entity/projectile/Projectile.java
+@@ -172,7 +172,7 @@ public abstract class Projectile extends Entity implements TraceableEntity {
+     }
+ 
+     public void shoot(final double xd, final double yd, final double zd, final float pow, final float uncertainty) {
+-        Vec3 movement = this.getMovementToShoot(xd, yd, zd, pow, uncertainty);
++        Vec3 movement = this.getMovementToShoot(xd, yd, zd, pow, 0.0f);
+         this.setDeltaMovement(movement);
+         this.needsSync = true;
+         double sd = movement.horizontalDistance();
+@@ -186,7 +186,7 @@ public abstract class Projectile extends Entity implements TraceableEntity {
+         float xd = -Mth.sin(yRot * Mth.DEG_TO_RAD) * Mth.cos(xRot * Mth.DEG_TO_RAD);
+         float yd = -Mth.sin((xRot + yOffset) * Mth.DEG_TO_RAD);
+         float zd = Mth.cos(yRot * Mth.DEG_TO_RAD) * Mth.cos(xRot * Mth.DEG_TO_RAD);
+-        this.shoot(xd, yd, zd, pow, uncertainty);
++        this.shoot(xd, yd, zd, pow, 0.0f);
+         Vec3 sourceMovement = source.getKnownMovement();
+         // Paper start - allow disabling relative velocity
+         if (!sourceMovement.isFinite()) {
+@@ -448,6 +448,9 @@ public abstract class Projectile extends Entity implements TraceableEntity {
+     }
+ 
+     protected void onHitEntity(final EntityHitResult hitResult) {
++        if (this.isOnFire() && hitResult.getEntity().isOnFire() && this.getOwner() instanceof Player player) {
++            player.igniteForSeconds(5);
++        }
+     }
+ 
+     protected void onHitBlock(final BlockHitResult hitResult) {
+diff --git a/net/minecraft/world/entity/projectile/ThrowableProjectile.java b/net/minecraft/world/entity/projectile/ThrowableProjectile.java
+index 787addf20375517333f2b75f20aff026c5b953d1..761593afc6cb2ac9ec24598ecfe2c5c3f9e71c4e 100644
+--- a/net/minecraft/world/entity/projectile/ThrowableProjectile.java
++++ b/net/minecraft/world/entity/projectile/ThrowableProjectile.java
+@@ -1,12 +1,17 @@
+ package net.minecraft.world.entity.projectile;
+ 
+ import net.minecraft.core.particles.ParticleTypes;
++import java.util.Optional;
++import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.InsideBlockEffectApplier;
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.block.Blocks;
++import net.minecraft.world.phys.AABB;
++import net.minecraft.world.phys.EntityHitResult;
+ import net.minecraft.world.phys.HitResult;
+ import net.minecraft.world.phys.Vec3;
++import org.jspecify.annotations.Nullable;
+ 
+ public abstract class ThrowableProjectile extends Projectile {
+     private static final float MIN_CAMERA_DISTANCE_SQUARED = 12.25F;
+@@ -45,21 +50,102 @@ public abstract class ThrowableProjectile extends Projectile {
+         this.handleFirstTickBubbleColumn();
+         this.applyGravity();
+         this.applyInertia();
+-        HitResult result = ProjectileUtil.getHitResultOnMoveVector(this, this::canHitEntity);
+-        Vec3 newPosition;
+-        if (result.getType() != HitResult.Type.MISS) {
+-            newPosition = result.getLocation();
+-        } else {
+-            newPosition = this.position().add(this.getDeltaMovement());
++        Vec3 originalMotion = this.getDeltaMovement();
++
++        int steps = Math.max(1, net.minecraft.util.Mth.ceil(originalMotion.length() / 0.5D));
++        Vec3 stepMotion = originalMotion.scale(1.0D / steps);
++
++        HitResult hit = null;
++        this.setDeltaMovement(stepMotion);
++
++        for (int i = 0; i < steps; i++) {
++            // Primary: standard raycast
++            HitResult r = ProjectileUtil.getHitResultOnMoveVector(this, this::canHitEntity);
++            if (r.getType() != HitResult.Type.MISS) {
++                hit = r;
++                // FIX 1: Snap to the exact collision point before breaking
++                Vec3 hitLoc = hit.getLocation();
++                this.setPos(hitLoc.x, hitLoc.y, hitLoc.z);
++                break;
++            }
++
++            // Secondary: swept CCD for fast-moving entities
++            EntityHitResult swept = this.checkSweptEntityCollision(stepMotion, steps);
++            if (swept != null) {
++                hit = swept;
++                // FIX 1: Snap to the exact collision point before breaking
++                Vec3 hitLoc = hit.getLocation();
++                this.setPos(hitLoc.x, hitLoc.y, hitLoc.z);
++                break;
+         }
+ 
+-        this.setPos(newPosition);
++            // Only advance the step position if no hit occurred
++            this.setPos(this.getX() + stepMotion.x, this.getY() + stepMotion.y, this.getZ() + stepMotion.z);
++        }
++
++        this.setDeltaMovement(originalMotion);
+         this.updateRotation();
+         this.applyEffectsFromBlocks();
++
++        // FIX 2: Restore the base entity tick logic
+         super.tick();
+-        if (result.getType() != HitResult.Type.MISS && this.isAlive()) {
+-            this.preHitTargetOrDeflectSelf(result); // CraftBukkit - projectile hit event
++
++        if (hit != null && hit.getType() != HitResult.Type.MISS && this.isAlive()) {
++            this.preHitTargetOrDeflectSelf(hit);
++        }
++    }
++
++    @Nullable
++    private EntityHitResult checkSweptEntityCollision(Vec3 stepMotion, int totalSteps) {
++        AABB ourBox    = this.getBoundingBox();
++        Vec3 ourCenter = ourBox.getCenter();
++
++        // Broad-phase: cover our step path + buffer for the candidate's step.
++        // inflate(1.5) is generous even for fast projectiles at 0.5-block step sizes.
++        AABB broadPhase = ourBox.expandTowards(stepMotion).inflate(1.5);
++
++        EntityHitResult best       = null;
++        double          bestDistSq = Double.MAX_VALUE;
++
++        for (Entity candidate : this.level().getEntities(this, broadPhase, this::canHitEntity)) {
++            Vec3 candidateVel = candidate.getDeltaMovement();
++
++            // If the candidate is slow/stationary the primary raycast already handles it.
++            // Only bother with CCD for entities moving fast enough to tunnel.
++            if (candidateVel.lengthSqr() < 0.0625) continue; // < 0.25 b/t
++
++            // Scale candidate velocity to match our sub-step fraction so the
++            // relative-motion segment length is consistent with our step size.
++            Vec3 candidateStep = candidateVel.scale(1.0 / totalSteps);
++            Vec3 relMotion     = stepMotion.subtract(candidateStep);
++
++            // If relative motion is negligible, they're travelling in lockstep —
++            // no tunneling risk.
++            if (relMotion.lengthSqr() < 1.0e-7) continue;
++
++            // Minkowski sum: expand the candidate's box by OUR half-extents.
++            // We can then treat our projectile as a single point for the ray test.
++            // *** This does NOT change the candidate's hitbox in any way. ***
++            AABB minkBox = candidate.getBoundingBox().inflate(
++                    ourBox.getXsize() * 0.5,
++                    ourBox.getYsize() * 0.5,
++                    ourBox.getZsize() * 0.5
++            );
++
++            // Clip the relative-velocity ray against the expanded box.
++            // Returns the entry point if the segment [ourCenter, ourCenter+relMotion]
++            // intersects minkBox, i.e. the two swept volumes would overlap this sub-step.
++            Optional<Vec3> intersection = minkBox.clip(ourCenter, ourCenter.add(relMotion));
++            if (intersection.isEmpty()) continue;
++
++            double distSq = ourCenter.distanceToSqr(intersection.get());
++            if (distSq < bestDistSq) {
++                bestDistSq = distSq;
++                best = new EntityHitResult(candidate, intersection.get());
++            }
+         }
++
++        return best;
+     }
+ 
+     private void applyInertia() {
+diff --git a/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java b/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java
+index 82f279c48cf3da6856ad96f753ee1a36dde9c725..bc1ac7e80afcb157693c1d881c5f099c0d14adf6 100644
+--- a/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java
++++ b/net/minecraft/world/entity/projectile/arrow/AbstractArrow.java
+@@ -502,7 +502,7 @@ public abstract class AbstractArrow extends Projectile {
+             }
+             // CraftBukkit end
+         }
+-
++        if (entity instanceof LivingEntity living) living.damageCooldownTime = 0; // PracticePvP - arrows ignore the damage cooldown
+         if (entity.hurtOrSimulate(damageSource, damage)) {
+             if (entity instanceof LivingEntity mob) {
+                 if (!this.level().isClientSide() && this.getPierceLevel() <= 0) {
+diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
+index 00861318771cd184c9f75a9a036deee9ec2ba310..1b3dd97d7084787d21be216aa798234154bafdff 100644
+--- a/net/minecraft/world/item/ItemStack.java
++++ b/net/minecraft/world/item/ItemStack.java
+@@ -633,7 +633,38 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
+         } else if (player instanceof ServerPlayer && player.hasInfiniteMaterials() && !force) { // Paper - Add EntityDamageItemEvent
+             return 0;
+         } else {
+-            return amount > 0 ? EnchantmentHelper.processDurabilityChange(level, this, amount) : amount;
++            if (amount > 0) {
++                // ASPAPER: Consistent Unbreaking Logic
++                int unbreakingLevel = 0;
++                net.minecraft.world.item.enchantment.ItemEnchantments enchantments = this.getOrDefault(net.minecraft.core.component.DataComponents.ENCHANTMENTS, net.minecraft.world.item.enchantment.ItemEnchantments.EMPTY);
++                for (it.unimi.dsi.fastutil.objects.Object2IntMap.Entry<net.minecraft.core.Holder<net.minecraft.world.item.enchantment.Enchantment>> entry : enchantments.entrySet()) {
++                    if (entry.getKey().is(net.minecraft.world.item.enchantment.Enchantments.UNBREAKING)) {
++                        unbreakingLevel = entry.getIntValue();
++                        break;
++                    }
++                }
++
++                if (unbreakingLevel > 0) {
++                    String itemName = this.getItem().toString();
++                    boolean isArmor = itemName.endsWith("_helmet") || itemName.endsWith("_chestplate") || itemName.endsWith("_leggings") || itemName.endsWith("_boots");
++                    double expectedDamage = isArmor ? amount * (0.6d + 0.4d / (unbreakingLevel + 1)) : amount * (1.0d / (unbreakingLevel + 1));
++
++                    net.minecraft.world.item.component.CustomData customData = this.getOrDefault(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.EMPTY);
++                    double storedFrac = 0.0;
++                    net.minecraft.nbt.CompoundTag tag = customData.copyTag();
++                    if (tag.contains("FractionalDamage")) {
++                        storedFrac = tag.getDoubleOr("FractionalDamage", 0.0);
++                    }
++
++                    double newFrac = storedFrac + expectedDamage;
++                    int intDmg = (int) newFrac;
++                    tag.putDouble("FractionalDamage", newFrac - intDmg);
++
++                    this.set(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.of(tag));
++                    return intDmg;
++                }
++            }
++            return amount;
+         }
+     }
+ 

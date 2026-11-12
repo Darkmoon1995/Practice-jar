@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Sun, 8 Nov 2026 19:51:08 +0330
+Subject: [PATCH] PracticePvP per-player combat settings API
+
+
+diff --git a/src/main/java/org/bukkit/entity/Player.java b/src/main/java/org/bukkit/entity/Player.java
+index 190313bc060d5f8440cec7c249ad1d2f1074f5bc..b4ab4e85c65114bd3b53d6b43b9806181e351b6b 100644
+--- a/src/main/java/org/bukkit/entity/Player.java
++++ b/src/main/java/org/bukkit/entity/Player.java
+@@ -3601,6 +3601,59 @@ public interface Player extends HumanEntity, Conversable, OfflinePlayer, PluginM
+      */
+     public boolean isAllowingServerListings();
+ 
++    /**
++     * Gets whether to skip the vanilla damage/invulnerability tick when a
++     * shield blocks the hit. When {@code true} the player will not receive
++     * an invulnerability tick after a successful shield block, allowing
++     * follow-up hits to register immediately.
++     *
++     * <p>Default: {@code true}</p>
++     *
++     * @return {@code true} if the vanilla damage tick is skipped on shield block
++     */
++    public boolean isSkipVanillaDamageTickWhenShieldBlocked();
++
++    /**
++     * Sets whether to skip the vanilla damage/invulnerability tick when a
++     * shield blocks the hit.
++     *
++     * @param skip whether to skip the damage tick on shield block
++     */
++    public void setSkipVanillaDamageTickWhenShieldBlocked(boolean skip);
++
++    /**
++     * Gets whether to skip the vanilla damage/invulnerability tick when a
++     * shield blocks the hit (Paper patch behavior).
++     *
++     * @return whether the damage tick is skipped on shield block
++     */
++    public boolean isSkipVanillaDamageTickWhenShieldBlockedPaper();
++
++    /**
++     * Sets whether to skip the vanilla damage/invulnerability tick when a
++     * shield blocks the hit (Paper patch behavior).
++     *
++     * @param skip whether to skip the damage tick on shield block
++     */
++    public void setSkipVanillaDamageTickWhenShieldBlockedPaper(boolean skip);
++
++    /**
++     * Gets whether equipment updates (attribute recalculation) are triggered
++     * on player actions such as clicking, interacting, or swapping items.
++     *
++     * <p>Default: {@code false}</p>
++     *
++     * @return {@code true} if equipment updates fire on player actions
++     */
++    public boolean isUpdateEquipmentOnPlayerActions();
++
++    /**
++     * Sets whether equipment updates are triggered on player actions.
++     *
++     * @param update whether to update equipment on player actions
++     */
++    public void setUpdateEquipmentOnPlayerActions(boolean update);
++
+     // Paper start
+     @Override
+     default net.kyori.adventure.text.event.HoverEvent<net.kyori.adventure.text.event.HoverEvent.ShowEntity> asHoverEvent(final java.util.function.UnaryOperator<net.kyori.adventure.text.event.HoverEvent.ShowEntity> op) {
