@@ -85,7 +85,7 @@ index 259b301b2c8b64cb7974a235afb260e0e991af54..d2ef67806ee4ab765c7fcdb4005f2e83
  
      /**
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 4929ac9cdfe22a98343baa0da8a09676218ee5e7..1e578cabf8796ff55706ce03c8ce376e5471f273 100644
+index 74e9297677affb580f0064f5db4476de557f6947..d5430717fb62b3bf418c5d7ba0a1e16c05cb5baf 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
 @@ -188,6 +188,14 @@ import org.jspecify.annotations.Nullable;
@@ -103,7 +103,7 @@ index 4929ac9cdfe22a98343baa0da8a09676218ee5e7..1e578cabf8796ff55706ce03c8ce376e
      private static MinecraftServer SERVER; // Paper
      public static final Logger LOGGER = LogUtils.getLogger();
      public static final net.kyori.adventure.text.logger.slf4j.ComponentLogger COMPONENT_LOGGER = net.kyori.adventure.text.logger.slf4j.ComponentLogger.logger(LOGGER.getName()); // Paper
-@@ -1295,10 +1303,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1297,10 +1305,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
                      // Paper start - improve tick loop
                      // handle catchup logic
                      final long ticksBehind = Math.max(1L, this.tickSchedule.getPeriodsAhead(thisTickNanos, tickStart));
@@ -115,7 +115,7 @@ index 4929ac9cdfe22a98343baa0da8a09676218ee5e7..1e578cabf8796ff55706ce03c8ce376e
  
                      // adjust ticksBehind so that it is not greater-than catchup
                      if (ticksBehind - catchup > 0L) {
-@@ -1559,6 +1564,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1561,6 +1566,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
      }
  
      protected void tickServer(final BooleanSupplier haveTime) {
@@ -124,7 +124,7 @@ index 4929ac9cdfe22a98343baa0da8a09676218ee5e7..1e578cabf8796ff55706ce03c8ce376e
          org.spigotmc.WatchdogThread.tick(); // Spigot
          long nano = Util.getNanos();
          int emptyTickThreshold = this.pauseWhenEmptySeconds() * 20;
-@@ -1717,7 +1724,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1719,7 +1726,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
              Optional.of(players),
              Optional.of(ServerStatus.Version.current()),
              Optional.ofNullable(this.statusIcon),
@@ -338,7 +338,7 @@ index 3b07e731e8d16c2b71cb55b85163029cf56fd02e..66169745d728d708e802f56ce43f0613
  
      @Override
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index 932865a9c5aafc4ce9759ababb5ea869ebb97ecf..4ff37270a8aa3c37401850451be8b54ed4f3741c 100644
+index ce8c8eb2dd659fa97562270c830788dd936d8f44..7a920059b446afca3d5eaa976eec52d745345c83 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
 @@ -1500,6 +1500,10 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl

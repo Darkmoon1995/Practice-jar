@@ -6,7 +6,7 @@ Subject: [PATCH] PvP networking: fast path packets, ghost block sync, fast
 
 
 diff --git a/net/minecraft/network/Connection.java b/net/minecraft/network/Connection.java
-index 936200d7620e1fe83eb45ddbcff86b6b6ecaab8f..7873ec4b31c0d1d4bb5c13dfbcc64ec1fb6608c9 100644
+index 76596e87945f0b95af8032338a64817a8faed4d0..da9afb86af854699e037de9c6f1b8df876c2cc15 100644
 --- a/net/minecraft/network/Connection.java
 +++ b/net/minecraft/network/Connection.java
 @@ -962,6 +962,11 @@ public class Connection extends SimpleChannelInboundHandler<Packet<?>> {
@@ -89,7 +89,7 @@ index a28958b8ab09b3ffdcedba19e0063af07f177080..046975d5a5467c0c140c9449f084738b
      }
  }
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 8178922f5ecc7f6709335c7fbeb6dca505b044bb..ae5f18d68bc42f633ef83b67b689793250d6e3b5 100644
+index 1136aa375b08ae5383c40916067a234cfc842b72..7ab4904e65dcc0fcdc407e6504d1184583303d13 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 @@ -1112,7 +1112,7 @@ public class ServerGamePacketListenerImpl
@@ -244,7 +244,7 @@ index 8178922f5ecc7f6709335c7fbeb6dca505b044bb..ae5f18d68bc42f633ef83b67b6897932
                  if (this.dropSpamThrottler.isUnderThreshold()) {
                      this.dropSpamThrottler.increment();
 diff --git a/net/minecraft/server/network/ServerLoginPacketListenerImpl.java b/net/minecraft/server/network/ServerLoginPacketListenerImpl.java
-index a1855a257c3ac801bbd371ca4508af755550d737..11c5744ac72d3649ece4a7a7154aad189f09772d 100644
+index eea7dd596eb9ac75dee29d843d786493d44034f3..b419a2d4d5d9315ae114d7066fc31e0b5533df16 100644
 --- a/net/minecraft/server/network/ServerLoginPacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerLoginPacketListenerImpl.java
 @@ -317,13 +317,15 @@ public class ServerLoginPacketListenerImpl implements ServerLoginPacketListener,
@@ -264,15 +264,9 @@ index a1855a257c3ac801bbd371ca4508af755550d737..11c5744ac72d3649ece4a7a7154aad18
          String playerName = gameprofile.name();
          java.net.InetAddress address = ((java.net.InetSocketAddress) this.connection.getRemoteAddress()).getAddress();
          java.util.UUID uniqueId = gameprofile.id();
-@@ -331,39 +333,22 @@ public class ServerLoginPacketListenerImpl implements ServerLoginPacketListener,
- 
-         // Paper start - Add more fields to AsyncPlayerPreLoginEvent
-         final InetAddress rawAddress = ((InetSocketAddress) this.connection.channel.remoteAddress()).getAddress();
--        com.destroystokyo.paper.profile.PlayerProfile profile = com.destroystokyo.paper.profile.CraftPlayerProfile.asBukkitCopy(gameprofile); // Paper - setPlayerProfileAPI
--        AsyncPlayerPreLoginEvent asyncEvent = new AsyncPlayerPreLoginEvent(playerName, address, rawAddress, uniqueId, this.transferred, profile, this.connection.hostname, this.paperLoginConnection); // Paper
-+        com.destroystokyo.paper.profile.PlayerProfile profile = com.destroystokyo.paper.profile.CraftPlayerProfile.asBukkitCopy(gameprofile);
-+
-+        AsyncPlayerPreLoginEvent asyncEvent = new AsyncPlayerPreLoginEvent(playerName, address, rawAddress, uniqueId, this.transferred, profile, this.connection.hostname, this.paperLoginConnection);
+@@ -334,36 +336,18 @@ public class ServerLoginPacketListenerImpl implements ServerLoginPacketListener,
+         com.destroystokyo.paper.profile.PlayerProfile profile = com.destroystokyo.paper.profile.CraftPlayerProfile.asBukkitCopy(gameprofile); // Paper - setPlayerProfileAPI
+         AsyncPlayerPreLoginEvent asyncEvent = new AsyncPlayerPreLoginEvent(playerName, address, rawAddress, uniqueId, this.transferred, profile, this.connection.hostname, this.paperLoginConnection); // Paper
          server.getPluginManager().callEvent(asyncEvent);
 +
          profile = asyncEvent.getPlayerProfile();

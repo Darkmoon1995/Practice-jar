@@ -22,7 +22,7 @@
 +//    }
  }
  
- tasks.generateDevelopmentBundle {
+ paperCheckstyle {
 @@ -86,7 +_,19 @@
      }
  }

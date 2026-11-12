@@ -97,6 +97,29 @@ public class AdventurePersistentDataContainer implements PersistentDataContainer
     }
 
     @Override
+    public @Nullable PersistentDataType<?, ?> getPrimitiveStorageType(@NotNull net.kyori.adventure.key.Key key) {
+        Preconditions.checkNotNull(key, "The key cannot be null");
+        final BinaryTag tag = this.tags.get(key.asString());
+        if (tag == null) {
+            return null;
+        }
+
+        final net.kyori.adventure.nbt.BinaryTagType<?> tagType = tag.type();
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.BYTE) return PersistentDataType.BYTE;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.SHORT) return PersistentDataType.SHORT;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.INT) return PersistentDataType.INTEGER;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.LONG) return PersistentDataType.LONG;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.FLOAT) return PersistentDataType.FLOAT;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.DOUBLE) return PersistentDataType.DOUBLE;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.STRING) return PersistentDataType.STRING;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.BYTE_ARRAY) return PersistentDataType.BYTE_ARRAY;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.INT_ARRAY) return PersistentDataType.INTEGER_ARRAY;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.LONG_ARRAY) return PersistentDataType.LONG_ARRAY;
+        if (tagType == net.kyori.adventure.nbt.BinaryTagTypes.COMPOUND) return PersistentDataType.TAG_CONTAINER;
+        return null; // lists and unknown types
+    }
+
+    @Override
     public <P, C> @Nullable C get(@NotNull NamespacedKey key, @NotNull PersistentDataType<P, C> type) {
         Preconditions.checkNotNull(key, "The key cannot be null");
         Preconditions.checkNotNull(type, "The provided type cannot be null");
