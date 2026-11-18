@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Wed, 18 Nov 2026 22:33:28 +0330
+Subject: [PATCH] Resync blocks after bucket use
+
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index ef5a1ce7f1d1e60b6d684c4fdfbc38594e240f73..b377258a3710d6183c379dc9b91c5b77a56c70b2 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -2253,6 +2253,29 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleUseItem(final ServerboundUseItemPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        // PracticePvP start - anti ghost fluid: buckets are used here, not in handleUseItemOn, so a rejected, cancelled
++        // or differently aimed bucket left the client with water or lava the server never had (or missing water it has)
++        final boolean bucket = this.player.getItemInHand(packet.hand()).getItem() instanceof net.minecraft.world.item.BucketItem;
++        this.handleUseItemInternal(packet);
++        if (bucket && !this.player.isRemoved()) this.resyncBucketTargets();
++    }
++
++    private void resyncBucketTargets() {
++        ServerLevel level = this.player.level();
++        Vec3 from = this.player.getEyePosition();
++        Vec3 to = from.add(this.player.getViewVector(1.0F).scale(this.player.blockInteractionRange()));
++        // what an empty bucket aims at (fluid sources) and what a full one aims at (blocks), and the block in front of each
++        for (net.minecraft.world.level.ClipContext.Fluid mode : new net.minecraft.world.level.ClipContext.Fluid[]{net.minecraft.world.level.ClipContext.Fluid.SOURCE_ONLY, net.minecraft.world.level.ClipContext.Fluid.NONE}) {
++            BlockHitResult hit = level.clip(new net.minecraft.world.level.ClipContext(from, to, net.minecraft.world.level.ClipContext.Block.OUTLINE, mode, this.player));
++            if (hit.getType() == HitResult.Type.BLOCK) {
++                this.send(new ClientboundBlockUpdatePacket(level, hit.getBlockPos()));
++                this.send(new ClientboundBlockUpdatePacket(level, hit.getBlockPos().relative(hit.getDirection())));
++            }
++        }
++    }
++
++    private void handleUseItemInternal(final ServerboundUseItemPacket packet) {
++        // PracticePvP end
+         if (this.player.isImmobile()) return; // CraftBukkit
+         // if (!this.checkLimit(packet.timestamp())) return; // Spigot - check limit // PracticePvP - allow fast placement
+         if (this.hasClientLoaded()) {

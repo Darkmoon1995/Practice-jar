@@ -85,7 +85,7 @@ index 259b301b2c8b64cb7974a235afb260e0e991af54..d2ef67806ee4ab765c7fcdb4005f2e83
  
      /**
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 74e9297677affb580f0064f5db4476de557f6947..d5430717fb62b3bf418c5d7ba0a1e16c05cb5baf 100644
+index d0db54f25134b24af6fa7effea9bc28b63d768db..08bb85b5eafa03cbc7cbec7fb9281261c6e9727d 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
 @@ -188,6 +188,14 @@ import org.jspecify.annotations.Nullable;
@@ -338,7 +338,7 @@ index 3b07e731e8d16c2b71cb55b85163029cf56fd02e..66169745d728d708e802f56ce43f0613
  
      @Override
 diff --git a/net/minecraft/world/level/Level.java b/net/minecraft/world/level/Level.java
-index ce8c8eb2dd659fa97562270c830788dd936d8f44..7a920059b446afca3d5eaa976eec52d745345c83 100644
+index 95a66ac2777fa04b9a7ab13d0dd0ded6e3b989f7..33dbe2ecc24fab58dfbd3dfec78c354be0af9adf 100644
 --- a/net/minecraft/world/level/Level.java
 +++ b/net/minecraft/world/level/Level.java
 @@ -1500,6 +1500,10 @@ public abstract class Level implements LevelAccessor, AutoCloseable, ca.spottedl
@@ -389,10 +389,10 @@ index 44fcc919a2de54c3ceb0fd0875aadaea083fabad..8c5bcd1b67c5005654ed12e8eaf763aa
                      throw new IllegalStateException(
                          String.format(
 diff --git a/net/minecraft/world/level/chunk/ChunkGenerator.java b/net/minecraft/world/level/chunk/ChunkGenerator.java
-index cc4800823c20e8ecbf0b4d74fd85a22bcb70c74c..3fa9523206e5ae663eb4fafea72b38247002982c 100644
+index 221657b7387f4ab0a1862127c90499f97bcc2276..b03fa7445855b4dedd029a866df28d0b4f6bc544 100644
 --- a/net/minecraft/world/level/chunk/ChunkGenerator.java
 +++ b/net/minecraft/world/level/chunk/ChunkGenerator.java
-@@ -586,7 +586,7 @@ public abstract class ChunkGenerator {
+@@ -677,7 +677,7 @@ public abstract class ChunkGenerator {
          final StructureTemplateManager structureTemplateManager,
          final ResourceKey<Level> level
      ) {

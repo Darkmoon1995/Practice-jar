@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Wed, 18 Nov 2026 22:33:28 +0330
+Subject: [PATCH] Tick budget keeps fluids, block ticks and combat entities
+
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index e14300c739c5372788b03f22a371b0b177fefa27..54dcfb76656ac0fb7a2f3665700b7148027f9df1 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -897,17 +897,13 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+             long tick = this.getGameTime();
+             profiler.push("blockTicks");
+ 
+-            // PracticePvP - skip block ticks when over the tick budget
+-            if (!net.minecraft.server.MinecraftServer.isOverBudget()) {
++            // PracticePvP - block and fluid ticks always run: skipping them on a slow tick left water, lava and
++            // falling blocks a tick or more behind what clients were shown (ghost fluids)
+             this.blockTicks.tick(tick, paperConfig().environment.maxBlockTicks, this::tickBlock); // Paper - configurable max block ticks
+-            }
+ 
+             profiler.popPush("fluidTicks");
+ 
+-            // PracticePvP - skip fluid ticks when over the tick budget
+-            if (!net.minecraft.server.MinecraftServer.isOverBudget()) {
+             this.fluidTicks.tick(tick, paperConfig().environment.maxFluidTicks, this::tickFluid); // Paper - configurable max fluid ticks
+-            }
+ 
+             profiler.pop();
+         }
+@@ -1346,8 +1342,12 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     // Paper end - log detailed entity tick information
+ 
+     public void tickNonPassenger(final Entity entity) {
+-        // PracticePvP start - skip non-combat entities when over the tick budget
+-        if (!(entity instanceof ServerPlayer || entity instanceof net.minecraft.world.entity.projectile.Projectile) && net.minecraft.server.MinecraftServer.isOverBudget()) {
++        // PracticePvP start - skip non-combat entities when over the tick budget. Crystals, TNT, falling blocks and
++        // dropped items are part of the fight: skipping them made them lag behind the client (ghost crystals and drops)
++        if (!(entity instanceof ServerPlayer || entity instanceof net.minecraft.world.entity.projectile.Projectile
++                || entity instanceof net.minecraft.world.entity.boss.enderdragon.EndCrystal || entity instanceof net.minecraft.world.entity.item.PrimedTnt
++                || entity instanceof net.minecraft.world.entity.item.FallingBlockEntity || entity instanceof net.minecraft.world.entity.item.ItemEntity)
++                && net.minecraft.server.MinecraftServer.isOverBudget()) {
+             return;
+         }
+         // PracticePvP end

@@ -6,7 +6,7 @@ Subject: [PATCH] PvP combat: knockback sync, shield stun, projectiles and
 
 
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 23297b54c74684765f90e9e599d051a44357e9a5..85e3e148449b0ad40a6dd295273d82f6e4f4e63c 100644
+index a0d10e4c3f78128029125bae8e8e476208f28d42..3f1d284a39b7a165e64743d390a89f89385939d7 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
 @@ -156,6 +156,15 @@ import org.bukkit.event.entity.EntityResurrectEvent;
@@ -36,7 +36,7 @@ index 23297b54c74684765f90e9e599d051a44357e9a5..85e3e148449b0ad40a6dd295273d82f6
      private float swimAmountO;
      protected Brain<?> brain;
      protected boolean skipDropExperience;
-@@ -1501,11 +1514,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -1512,11 +1525,19 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
              }
              if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
              this.lastHurt = damage;
@@ -56,7 +56,7 @@ index 23297b54c74684765f90e9e599d051a44357e9a5..85e3e148449b0ad40a6dd295273d82f6
          }
  
          this.resolveMobResponsibleForDamage(source);
-@@ -2076,9 +2097,16 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -2087,9 +2108,16 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
              }
  
              Vec3 deltaVector = new Vec3(xd, 0.0, zd).normalize().scale(power);
@@ -74,7 +74,7 @@ index 23297b54c74684765f90e9e599d051a44357e9a5..85e3e148449b0ad40a6dd295273d82f6
                  deltaMovement.z / 2.0 - deltaVector.z
              );
              // Paper start - knockback events
-@@ -2572,7 +2600,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -2583,7 +2611,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
                          CriteriaTriggers.PLAYER_HURT_ENTITY.trigger(sourcePlayer, this, source, originalDamage, dmg, true); // Paper - fix taken/dealt param order
                      }
  
@@ -83,7 +83,7 @@ index 23297b54c74684765f90e9e599d051a44357e9a5..85e3e148449b0ad40a6dd295273d82f6
                  } else {
                      return true; // Paper - return false ONLY if event was cancelled
                  }
-@@ -3856,7 +3884,41 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -3867,7 +3895,41 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
                  if (freeFallInterval % 2 == 0) {
                      List<EquipmentSlot> slotsWithGliders = EquipmentSlot.VALUES.stream().filter(slot -> canGlideUsing(this.getItemBySlot(slot), slot)).toList();
                      EquipmentSlot slotToDamage = Util.getRandom(slotsWithGliders, this.random);
@@ -126,7 +126,7 @@ index 23297b54c74684765f90e9e599d051a44357e9a5..85e3e148449b0ad40a6dd295273d82f6
                  }
  
                  this.gameEvent(GameEvent.ELYTRA_GLIDE);
-@@ -5036,4 +5098,154 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -5047,4 +5109,154 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
              return this.currentSwing != null;
          }
      }
@@ -282,7 +282,7 @@ index 23297b54c74684765f90e9e599d051a44357e9a5..85e3e148449b0ad40a6dd295273d82f6
 +    // PracticePvP end - KnockbackSync helpers
  }
 diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
-index 4068dc1cea4edca196dc0c58b4804e94dd07881e..34a50bd98572baea54df81e419b2e3a6c213029b 100644
+index 4ba3fb85b0473b4e7aa237701034d25f84e955cd..d70f8a6cb19cf6b19d418915037e3bef27a9bd6f 100644
 --- a/net/minecraft/world/entity/player/Player.java
 +++ b/net/minecraft/world/entity/player/Player.java
 @@ -1988,7 +1988,7 @@ public abstract class Player extends Avatar implements ContainerUser {

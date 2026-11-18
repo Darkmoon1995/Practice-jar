@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Wed, 18 Nov 2026 22:33:28 +0330
+Subject: [PATCH] Forget the last explosion cause on world change
+
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 1137be30f125cb79f05f3e5c104cdf8cca979ff1..94e85b6712ebe14823210027009be7329b5d0f19 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -1599,6 +1599,11 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         profiler.pop();
+         profiler.push("placing");
+         this.setServerLevel(newLevel);
++        // PracticePvP start - the entity behind the last explosion (TNT, crystal, wind charge) is only cleared when the
++        // player next falls; held across a world change it kept a whole unloaded arena world in memory
++        this.currentExplosionCause = null;
++        this.currentExplosionImpactPos = null;
++        // PracticePvP end
+         this.connection.internalTeleport(PositionMoveRotation.of(transition), transition.relatives()); // CraftBukkit - use internal teleport without event
+         this.connection.resetPosition();
+         newLevel.addDuringTeleport(this);
