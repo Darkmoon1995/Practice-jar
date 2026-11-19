@@ -5,10 +5,28 @@ Subject: [PATCH] Arenas show their map's dimension key to clients
 
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index 6ee3aa86b0af0870e222a0efdc976d224ed87ceb..69ec14c780949e7e757cbdb0deda7c85128c293a 100644
+index 6ee3aa86b0af0870e222a0efdc976d224ed87ceb..9e0dcf0e6d38e8a190acb17cd7a6734b35272a96 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
-@@ -2911,11 +2911,47 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+@@ -1583,6 +1583,17 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         this.isChangingDimension = true;
+         LevelData levelData = newLevel.getLevelData();
+         this.connection.restartClientLoadTimerAfterRespawn(); // Paper - reset client world load status on cross-dimension teleport
++        // PracticePvP start - leaving an arena: the client drops a world without unloading its chunks, and the server's
++        // unload packets only follow the respawn packet, so client chunk caches (Bobby) never stored an arena. Unload
++        // the arena's chunks on the client first; the server's own state is unchanged.
++        if (PRACTICE_ARENA_NAME.matcher(oldLevel.dimension().identifier().getPath()).matches() && this.moonrise$getChunkLoader() != null) {
++            it.unimi.dsi.fastutil.longs.LongIterator sent = this.moonrise$getChunkLoader().getSentChunksRaw().iterator();
++            while (sent.hasNext()) {
++                long chunk = sent.nextLong();
++                this.connection.send(new net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket(new ChunkPos(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))));
++            }
++        }
++        // PracticePvP end
+         this.connection.send(new ClientboundRespawnPacket(this.createCommonSpawnInfo(newLevel), ClientboundRespawnPacket.KEEP_ALL_DATA));
+         this.connection.send(new ClientboundChangeDifficultyPacket(levelData.getDifficulty(), levelData.isDifficultyLocked()));
+         PlayerList playerList = this.server.getPlayerList();
+@@ -2911,11 +2922,47 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
          }
      }
  
