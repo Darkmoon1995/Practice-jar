@@ -5,10 +5,10 @@ Subject: [PATCH] Tab list per match
 
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index 94e85b6712ebe14823210027009be7329b5d0f19..902ea178269470d27b2ace16157ce044f14a6a16 100644
+index a8842c5604931f97c6d6fbfb160e065477e86d60..c342549bba4df86bb1c2b21e8c074a1004337347 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
-@@ -1603,6 +1603,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+@@ -1605,6 +1605,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
          // player next falls; held across a world change it kept a whole unloaded arena world in memory
          this.currentExplosionCause = null;
          this.currentExplosionImpactPos = null;
@@ -16,7 +16,7 @@ index 94e85b6712ebe14823210027009be7329b5d0f19..902ea178269470d27b2ace16157ce044
          // PracticePvP end
          this.connection.internalTeleport(PositionMoveRotation.of(transition), transition.relatives()); // CraftBukkit - use internal teleport without event
          this.connection.resetPosition();
-@@ -2970,6 +2971,27 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+@@ -2995,6 +2996,27 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
          return getInputVector(new Vec3(leftIntent, 0.0, forwardIntent), 1.0F, this.getYRot());
      }
  

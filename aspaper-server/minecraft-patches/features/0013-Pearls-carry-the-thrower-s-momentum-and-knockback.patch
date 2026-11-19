@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Thu, 19 Nov 2026 08:31:56 +0330
+Subject: [PATCH] Pearls carry the thrower's momentum and knockback
+
+
+diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
+index e46f95b19da1c14f240ec6697f22b5e220e0a835..351de42c4e00bdb736f0c7468c30287736042bbd 100644
+--- a/net/minecraft/server/level/ServerEntity.java
++++ b/net/minecraft/server/level/ServerEntity.java
+@@ -261,6 +261,7 @@ public class ServerEntity {
+             }
+             // CraftBukkit end
+             this.entity.syncVelocity = false;
++            if (this.entity instanceof ServerPlayer player) player.practiceKnockbackSent(player.getDeltaMovement()); // PracticePvP
+             this.synchronizer.sendToTrackingPlayersAndSelf(new ClientboundSetEntityMotionPacket(this.entity));
+         }
+     }
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 94e85b6712ebe14823210027009be7329b5d0f19..a8842c5604931f97c6d6fbfb160e065477e86d60 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -278,6 +278,8 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     public WardenSpawnTracker wardenSpawnTracker = new WardenSpawnTracker();
+     private @Nullable BlockPos raidOmenPosition;
+     private Vec3 lastKnownClientMovement = Vec3.ZERO;
++    private @Nullable Vec3 practiceKnockback; // PracticePvP - last velocity the server sent this player
++    private int practiceKnockbackTick; // PracticePvP
+     private Input lastClientInput = Input.EMPTY;
+     private final Set<ThrownEnderpearl> enderPearls = new HashSet<>();
+     private boolean postEffectsDirty = true;
+@@ -2945,6 +2947,29 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         this.lastKnownClientMovement = lastKnownClientMovement;
+     }
+ 
++    // PracticePvP start - knockback momentum for thrown projectiles
++    public void practiceKnockbackSent(final Vec3 velocity) {
++        this.practiceKnockback = velocity;
++        this.practiceKnockbackTick = this.tickCount;
++    }
++
++    /**
++     * The velocity the server last sent this player (a hit's knockback), carried forward with air drag and gravity to
++     * now, while the client can't have reported moving with it yet (its ping plus two ticks); otherwise null.
++     */
++    public @Nullable Vec3 practiceFreshKnockback() {
++        Vec3 velocity = this.practiceKnockback;
++        int age = this.tickCount - this.practiceKnockbackTick;
++        if (velocity == null || age < 0 || age > 2 + Math.min(10, (this.connection.latency() + 49) / 50)) {
++            return null;
++        }
++        for (int i = 0; i < age; i++) {
++            velocity = new Vec3(velocity.x * 0.91, (velocity.y - 0.08) * 0.98, velocity.z * 0.91);
++        }
++        return velocity;
++    }
++    // PracticePvP end
++
+     @Override
+     protected float getEnchantedDamage(final Entity entity, final float dmg, final DamageSource damageSource) {
+         return EnchantmentHelper.modifyDamage(this.level(), this.getWeaponItem(), entity, damageSource, dmg);
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index d70f8a6cb19cf6b19d418915037e3bef27a9bd6f..8b5f7944bc669eee4965443168eeceb8dc81b43d 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -1242,6 +1242,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+             }
+ 
+             if (!cancelled) {
++            serverPlayer.practiceKnockbackSent(entity.getDeltaMovement()); // PracticePvP
+             serverPlayer.connection.send(new ClientboundSetEntityMotionPacket(entity));
+             entity.syncVelocity = false;
+             entity.setDeltaMovement(oldMovement);
+diff --git a/net/minecraft/world/entity/projectile/Projectile.java b/net/minecraft/world/entity/projectile/Projectile.java
+index 749fef9d3216f80948dc1fc25e9222076465de8d..51532bcab43a3b1712acad491f7d3520a5cd088e 100644
+--- a/net/minecraft/world/entity/projectile/Projectile.java
++++ b/net/minecraft/world/entity/projectile/Projectile.java
+@@ -187,13 +187,18 @@ public abstract class Projectile extends Entity implements TraceableEntity {
+         float yd = -Mth.sin((xRot + yOffset) * Mth.DEG_TO_RAD);
+         float zd = Mth.cos(yRot * Mth.DEG_TO_RAD) * Mth.cos(xRot * Mth.DEG_TO_RAD);
+         this.shoot(xd, yd, zd, pow, 0.0f);
+-        Vec3 sourceMovement = source.getKnownMovement();
++        // PracticePvP start - a projectile thrown right after a hit carries the knockback: the client only reports moving
++        // with it a ping later, until then its known movement is still the movement from before the hit
++        Vec3 knockback = source instanceof net.minecraft.server.level.ServerPlayer player ? player.practiceFreshKnockback() : null;
++        Vec3 sourceMovement = knockback != null ? knockback : source.getKnownMovement();
++        boolean dropVertical = knockback == null && source.onGround();
++        // PracticePvP end
+         // Paper start - allow disabling relative velocity
+         if (!sourceMovement.isFinite()) {
+             sourceMovement = Vec3.ZERO;
+         }
+         if (!source.level().paperConfig().misc.disableRelativeProjectileVelocity) {
+-        this.setDeltaMovement(this.getDeltaMovement().add(sourceMovement.x, source.onGround() ? 0.0 : sourceMovement.y, sourceMovement.z));
++        this.setDeltaMovement(this.getDeltaMovement().add(sourceMovement.x, dropVertical ? 0.0 : sourceMovement.y, sourceMovement.z)); // PracticePvP
+         }
+         // Paper end - allow disabling relative velocity
+     }
