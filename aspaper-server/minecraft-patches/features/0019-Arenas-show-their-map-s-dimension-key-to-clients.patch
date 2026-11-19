@@ -5,10 +5,10 @@ Subject: [PATCH] Arenas show their map's dimension key to clients
 
 
 diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
-index 6ee3aa86b0af0870e222a0efdc976d224ed87ceb..8f92219194df598def829ca8a3162e811e419433 100644
+index 6ee3aa86b0af0870e222a0efdc976d224ed87ceb..69ec14c780949e7e757cbdb0deda7c85128c293a 100644
 --- a/net/minecraft/server/level/ServerPlayer.java
 +++ b/net/minecraft/server/level/ServerPlayer.java
-@@ -2911,10 +2911,39 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+@@ -2911,11 +2911,47 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
          }
      }
  
@@ -16,10 +16,13 @@ index 6ee3aa86b0af0870e222a0efdc976d224ed87ceb..8f92219194df598def829ca8a3162e81
 +    // map (named <map>_<32 hex> by the plugin's ArenaManager), so clients and client mods that cache chunks per
 +    // world (Bobby) saw a brand-new world every match. All arenas of one map now look like the world practice:<map>.
 +    // The client only builds a new world when the key changes, so moving straight between two different arenas of
-+    // the same map (next round, /spectate) alternates with practice:<map>_b. Only keys are kept, never the level.
++    // the same map (next round, /spectate) alternates with practice:<map>_b. Arenas also get a fixed seed per map:
++    // slime worlds get a random seed each, and Bobby files its cache under the seed hash too. Only keys and seeds are
++    // kept, never the level.
 +    private static final java.util.regex.Pattern PRACTICE_ARENA_NAME = java.util.regex.Pattern.compile("(.+)_[0-9a-f]{32}");
 +    private @Nullable ResourceKey<Level> practiceLastRealDimension;
 +    private @Nullable ResourceKey<Level> practiceLastShownDimension;
++    private long practiceLastShownSeed;
 +
 +    private ResourceKey<Level> practiceShownDimension(final ServerLevel level) {
 +        ResourceKey<Level> real = level.dimension();
@@ -29,7 +32,9 @@ index 6ee3aa86b0af0870e222a0efdc976d224ed87ceb..8f92219194df598def829ca8a3162e81
 +        }
 +        java.util.regex.Matcher arena = PRACTICE_ARENA_NAME.matcher(real.identifier().getPath());
 +        ResourceKey<Level> shown = real;
++        long seed = BiomeManager.obfuscateSeed(level.getSeed());
 +        if (arena.matches()) {
++            seed = BiomeManager.obfuscateSeed(("practice:" + arena.group(1)).hashCode());
 +            shown = ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, Identifier.fromNamespaceAndPath("practice", arena.group(1)));
 +            if (shown.equals(this.practiceLastShownDimension)) {
 +                shown = ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, Identifier.fromNamespaceAndPath("practice", arena.group(1) + "_b"));
@@ -37,15 +42,19 @@ index 6ee3aa86b0af0870e222a0efdc976d224ed87ceb..8f92219194df598def829ca8a3162e81
 +        }
 +        this.practiceLastRealDimension = real;
 +        this.practiceLastShownDimension = shown;
++        this.practiceLastShownSeed = seed;
 +        return shown;
 +    }
 +    // PracticePvP end
 +
      public CommonPlayerSpawnInfo createCommonSpawnInfo(final ServerLevel level) {
++        ResourceKey<Level> shownDimension = this.practiceShownDimension(level); // PracticePvP - arenas show their map's dimension key and seed
          return new CommonPlayerSpawnInfo(
              level.dimensionTypeRegistration(),
 -            level.dimension(),
-+            this.practiceShownDimension(level), // PracticePvP - arenas show their map's dimension key
-             BiomeManager.obfuscateSeed(level.getSeed()),
+-            BiomeManager.obfuscateSeed(level.getSeed()),
++            shownDimension, // PracticePvP
++            this.practiceLastShownSeed, // PracticePvP
              this.gameMode.getGameModeForPlayer(),
              Optional.ofNullable(this.gameMode.getPreviousGameModeForPlayer()),
+             level.isDebug(),
