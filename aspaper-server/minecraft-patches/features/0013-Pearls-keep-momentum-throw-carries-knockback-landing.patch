@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Bot <bot@example.com>
 Date: Thu, 19 Nov 2026 08:31:56 +0330
-Subject: [PATCH] Pearls carry the thrower's momentum and knockback
+Subject: [PATCH] Pearls keep momentum: throw carries knockback, landing keeps
+ velocity
 
 
 diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
@@ -96,3 +97,29 @@ index 749fef9d3216f80948dc1fc25e9222076465de8d..51532bcab43a3b1712acad491f7d3520
          }
          // Paper end - allow disabling relative velocity
      }
+diff --git a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
+index 4abbb6a8029f6c77fdbeda9376d3d5cc5970896d..00d454a985396689b59fa96a6b8281b50f14cf99 100644
+--- a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
++++ b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
+@@ -108,8 +108,9 @@ public class ThrownEnderpearl extends ThrowableItemProjectile {
+                         // Store pre teleportation position as the teleport has been moved up.
+                         final double preTeleportX = player.getX(), preTeleportY = player.getY(), preTeleportZ = player.getZ();
+                         final float preTeleportYRot = player.getYRot(), preTeleportXRot = player.getXRot();
++                        // PracticePvP - keep the player's momentum on landing as before 26.3 (Relative.DELTA), 26.3 zeroes it
+                         ServerPlayer newOwner = player.teleport(new TeleportTransition(
+-                            level, teleportPos, Vec3.ZERO, 0.0F, 0.0F, Relative.ROTATION, TeleportTransition.DO_NOTHING).withCause(org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.ENDER_PEARL));
++                            level, teleportPos, Vec3.ZERO, 0.0F, 0.0F, Relative.union(Relative.ROTATION, Relative.DELTA), TeleportTransition.DO_NOTHING).withCause(org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.ENDER_PEARL));
+                         if (newOwner == null) {
+                             this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.HIT);
+                             return;
+@@ -135,7 +136,10 @@ public class ThrownEnderpearl extends ThrowableItemProjectile {
+                         if (newOwner != null) {
+                             newOwner.resetFallDistance();
+                             newOwner.resetCurrentImpulseContext();
++                            // PracticePvP - the landing damage would send the server's stale velocity and stop the momentum kept above
++                            boolean syncVelocity = newOwner.syncVelocity;
+                             newOwner.hurtServer(player.level(), this.damageSources().enderPearl().eventEntityDamager(this), 5.0F); // CraftBukkit // Paper - fix DamageSource API
++                            newOwner.syncVelocity = syncVelocity;
+                         }
+ 
+                         this.playSound(level, teleportPos);
