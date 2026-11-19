@@ -1,0 +1,21 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Thu, 19 Nov 2026 08:31:56 +0330
+Subject: [PATCH] Pearl landing keeps momentum as before 26.3
+
+
+diff --git a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
+index 4abbb6a8029f6c77fdbeda9376d3d5cc5970896d..df004601fceffd51a64039fd0d267872018d8363 100644
+--- a/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
++++ b/net/minecraft/world/entity/projectile/throwableitemprojectile/ThrownEnderpearl.java
+@@ -108,8 +108,9 @@ public class ThrownEnderpearl extends ThrowableItemProjectile {
+                         // Store pre teleportation position as the teleport has been moved up.
+                         final double preTeleportX = player.getX(), preTeleportY = player.getY(), preTeleportZ = player.getZ();
+                         final float preTeleportYRot = player.getYRot(), preTeleportXRot = player.getXRot();
++                        // PracticePvP - keep the player's momentum on landing as before 26.3 (Relative.DELTA), 26.3 zeroes it
+                         ServerPlayer newOwner = player.teleport(new TeleportTransition(
+-                            level, teleportPos, Vec3.ZERO, 0.0F, 0.0F, Relative.ROTATION, TeleportTransition.DO_NOTHING).withCause(org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.ENDER_PEARL));
++                            level, teleportPos, Vec3.ZERO, 0.0F, 0.0F, Relative.union(Relative.ROTATION, Relative.DELTA), TeleportTransition.DO_NOTHING).withCause(org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.ENDER_PEARL));
+                         if (newOwner == null) {
+                             this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.HIT);
+                             return;
