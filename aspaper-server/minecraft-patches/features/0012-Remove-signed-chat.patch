@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Thu, 19 Nov 2026 08:31:46 +0330
+Subject: [PATCH] Remove signed chat
+
+
+diff --git a/net/minecraft/network/chat/OutgoingChatMessage.java b/net/minecraft/network/chat/OutgoingChatMessage.java
+index 259cbcbdd3cd47907629772dc7565212bb434729..b8496b43c0a8f2856f5ab8be3609c47c43228c93 100644
+--- a/net/minecraft/network/chat/OutgoingChatMessage.java
++++ b/net/minecraft/network/chat/OutgoingChatMessage.java
+@@ -47,7 +47,8 @@ public interface OutgoingChatMessage {
+             PlayerChatMessage filteredMessage = this.message.filter(filtered);
+             filteredMessage = unsigned != null ? filteredMessage.withUnsignedContent(unsigned) : filteredMessage; // Paper
+             if (!filteredMessage.isFullyFiltered()) {
+-                player.connection.sendPlayerChatMessage(filteredMessage, chatType);
++                // PracticePvP - no signed chat: player chat goes out as a system message (no signature, no "not secure" mark)
++                player.connection.send(new net.minecraft.network.protocol.game.ClientboundSystemChatPacket(chatType.decorate(filteredMessage.decoratedContent()), false));
+             }
+         }
+     }
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index b377258a3710d6183c379dc9b91c5b77a56c70b2..0b050c2a5177ccb1af255c2ece264ee94c987e7d 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -3743,6 +3743,7 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleChatSessionUpdate(final ServerboundChatSessionUpdatePacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
++        if (true) return; // PracticePvP - no signed chat: never take a chat session, so all chat and commands arrive and stay unsigned
+         RemoteChatSession.Data newChatSession = packet.chatSession();
+         ProfilePublicKey.Data oldProfileKey = this.chatSession != null ? this.chatSession.profilePublicKey().data() : null;
+         ProfilePublicKey.Data newProfileKey = newChatSession.profilePublicKey();

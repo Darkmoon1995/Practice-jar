@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Thu, 19 Nov 2026 08:32:04 +0330
+Subject: [PATCH] Ping-aware attack charge for spear jabs and charged hits
+
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 0b050c2a5177ccb1af255c2ece264ee94c987e7d..742918541f3e90bbc4b16639953d14ee9ba278fb 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -1991,6 +1991,14 @@ public class ServerGamePacketListenerImpl
+         this.send(ClientboundPlayerPositionPacket.of(this.awaitingTeleport, destination, relatives));
+     }
+ 
++    // PracticePvP start - the client charges its attack on its own clock and the hit reaches us a ping later, and ticks
++    // skipped after a lag spike never charge the server's counter: with vanilla's fixed 5 ticks a spear jab the client
++    // already lunged with (Lunge) was thrown away here, a ghost lunge. Allow the player's ping in ticks on top, up to 7.
++    private int attackChargeTolerance() {
++        return 5 + Math.min(7, (this.latency() + 49) / 50);
++    }
++    // PracticePvP end
++
+     @Override
+     public void handlePlayerAction(final ServerboundPlayerActionPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+@@ -2005,7 +2013,7 @@ public class ServerGamePacketListenerImpl
+                         return;
+                     } else {
+                         ItemStack itemInHand = this.player.getItemInHand(InteractionHand.MAIN_HAND);
+-                        if (this.player.cannotAttackWithItem(itemInHand, 5)) {
++                        if (this.player.cannotAttackWithItem(itemInHand, this.attackChargeTolerance())) { // PracticePvP - ping-aware
+                             return;
+                         }
+ 
+@@ -2949,7 +2957,7 @@ public class ServerGamePacketListenerImpl
+                             this.disconnect(Component.translatable("multiplayer.disconnect.invalid_entity_attacked"), org.bukkit.event.player.PlayerKickEvent.Cause.INVALID_ENTITY_ATTACKED); // Paper - add cause
+                             LOGGER.warn("Player {} tried to attack an invalid entity", this.player.getPlainTextName());
+                         } else if (mainHandItem.isItemEnabled(level.enabledFeatures())) {
+-                            if (!this.player.cannotAttackWithItem(mainHandItem, 5)) {
++                            if (!this.player.cannotAttackWithItem(mainHandItem, this.attackChargeTolerance())) { // PracticePvP - ping-aware
+                                 this.player.attack(target);
+                             }
+                         }

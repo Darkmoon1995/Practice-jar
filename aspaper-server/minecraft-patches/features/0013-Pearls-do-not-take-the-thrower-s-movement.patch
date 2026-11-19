@@ -1,0 +1,21 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Thu, 19 Nov 2026 08:31:56 +0330
+Subject: [PATCH] Pearls do not take the thrower's movement
+
+
+diff --git a/net/minecraft/world/entity/projectile/Projectile.java b/net/minecraft/world/entity/projectile/Projectile.java
+index 749fef9d3216f80948dc1fc25e9222076465de8d..d3b7d4caa501468659ab8849a78221523760a8d3 100644
+--- a/net/minecraft/world/entity/projectile/Projectile.java
++++ b/net/minecraft/world/entity/projectile/Projectile.java
+@@ -192,7 +192,9 @@ public abstract class Projectile extends Entity implements TraceableEntity {
+         if (!sourceMovement.isFinite()) {
+             sourceMovement = Vec3.ZERO;
+         }
+-        if (!source.level().paperConfig().misc.disableRelativeProjectileVelocity) {
++        // PracticePvP - a pearl flies where it is aimed, as in older versions: it never takes the thrower's movement,
++        // so a pearl thrown right after being hit does not carry the knockback
++        if (!source.level().paperConfig().misc.disableRelativeProjectileVelocity && !(this instanceof net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEnderpearl)) {
+         this.setDeltaMovement(this.getDeltaMovement().add(sourceMovement.x, source.onGround() ? 0.0 : sourceMovement.y, sourceMovement.z));
+         }
+         // Paper end - allow disabling relative velocity

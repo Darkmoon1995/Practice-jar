@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@example.com>
+Date: Thu, 19 Nov 2026 08:32:30 +0330
+Subject: [PATCH] Tab list per match
+
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 94e85b6712ebe14823210027009be7329b5d0f19..902ea178269470d27b2ace16157ce044f14a6a16 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -1603,6 +1603,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         // player next falls; held across a world change it kept a whole unloaded arena world in memory
+         this.currentExplosionCause = null;
+         this.currentExplosionImpactPos = null;
++        this.updatePracticeTabListing();
+         // PracticePvP end
+         this.connection.internalTeleport(PositionMoveRotation.of(transition), transition.relatives()); // CraftBukkit - use internal teleport without event
+         this.connection.resetPosition();
+@@ -2970,6 +2971,27 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         return getInputVector(new Vec3(leftIntent, 0.0, forwardIntent), 1.0F, this.getYRot());
+     }
+ 
++    // PracticePvP start - tab list per match: a player in an arena (a slime world, one per match) only has the players
++    // of that same world listed, which is the match and its spectators. Listing only: nobody is hidden, entities, skins
++    // and sounds are untouched. Players outside arenas list everyone.
++    public void updatePracticeTabListing() {
++        for (ServerPlayer other : this.server.getPlayerList().getPlayers()) {
++            if (other == this) continue;
++            setPracticeListed(this, other);
++            setPracticeListed(other, this);
++        }
++    }
++
++    private static void setPracticeListed(final ServerPlayer viewer, final ServerPlayer target) {
++        boolean listed = !(viewer.level() instanceof com.infernalsuite.asp.level.SlimeLevelInstance) || viewer.level() == target.level();
++        org.bukkit.craftbukkit.entity.CraftPlayer view = viewer.getBukkitEntity();
++        org.bukkit.entity.Player seen = target.getBukkitEntity();
++        if (view.canSee(seen)) {
++            if (listed) view.listPlayer(seen); else view.unlistPlayer(seen);
++        }
++    }
++    // PracticePvP end
++
+     public void registerEnderPearl(final ThrownEnderpearl enderPearl) {
+         this.enderPearls.add(enderPearl);
+     }
+diff --git a/net/minecraft/server/players/PlayerList.java b/net/minecraft/server/players/PlayerList.java
+index 372b860106dd05519d40538b9e69e9e782275ec9..e1c0edb1cef7928a15cec3836e5fcbfcf6ee3246 100644
+--- a/net/minecraft/server/players/PlayerList.java
++++ b/net/minecraft/server/players/PlayerList.java
+@@ -287,6 +287,7 @@ public abstract class PlayerList {
+         }
+         // Paper end - Use single player info update packet on join
+         player.sentListPacket = true;
++        player.updatePracticeTabListing(); // PracticePvP - tab list per match
+         player.suppressTrackerForLogin = false; // Paper - Fire PlayerJoinEvent when Player is actually ready
+         player.level().getChunkSource().addEntity(player); // Paper - Fire PlayerJoinEvent when Player is actually ready; track entity now
+         // CraftBukkit end
+@@ -714,6 +715,7 @@ public abstract class PlayerList {
+         ).callEvent();
+         // Paper end
+ 
++        player.updatePracticeTabListing(); // PracticePvP - tab list per match
+         return player;
+     }
+ 
