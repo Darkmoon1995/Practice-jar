@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Darkmoon1995 <darkmoonmasih@gmail.com>
+Date: Thu, 19 Nov 2026 20:55:10 +0330
+Subject: [PATCH] Legacy snowball and egg knockback
+
+
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index c77a2c4d38f397ae279d7fdf168e99f329327cd8..a4472fc14d0f6492da07a708628a4e31046943e5 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -1475,6 +1475,11 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         }
+ 
+         float originalDamage = damage;
++        // PracticePvP start - 1.8 snowball / egg knockback: their 0-damage hit on a player still flinches and knocks back
++        final boolean legacyThrownKnockback = this instanceof ServerPlayer && originalDamage == 0.0F
++            && (source.getDirectEntity() instanceof net.minecraft.world.entity.projectile.throwableitemprojectile.Snowball
++                || source.getDirectEntity() instanceof net.minecraft.world.entity.projectile.throwableitemprojectile.ThrownEgg);
++        // PracticePvP end - 1.8 snowball / egg knockback
+         ItemStack itemInUse = this.getUseItem();
+         float damageBlocked = this.applyItemBlocking(level, source, damage, true); // Paper
+         // damage -= damageBlocked; // CraftBukkit - Moved into handleEntityDamage(DamageSource, float) to allow modification
+@@ -1510,7 +1515,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             if (!this.actuallyHurt(level, source, (float)event.getFinalDamage(), event)) { // Paper - fix invulnerability reduction in EntityDamageEvent - no longer subtract lastHurt, that is part of the damage event calc now
+                 return false;
+             }
+-            if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
++            if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0 && !legacyThrownKnockback) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event. // PracticePvP - except 1.8 snowball / egg knockback
+             // CraftBukkit end
+             this.lastHurt = damage;
+             tookFullDamage = false;
+@@ -1523,7 +1528,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             if (!this.actuallyHurt(level, source, (float)event.getFinalDamage(), event)) {
+                 return false;
+             }
+-            if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event.
++            if (this instanceof ServerPlayer && event.getDamage() == 0 && originalDamage == 0 && !legacyThrownKnockback) return false; // Paper - revert to vanilla damage - players are not affected by damage that is 0 - skip damage if the vanilla damage is 0 and was not modified by plugins in the event. // PracticePvP - except 1.8 snowball / egg knockback
+             this.lastHurt = damage;
+             // PracticePvP start - shield stun: skip the damage tick on a shield block if enabled for this player
+             if (blocked && this.practicePvPSkipDamageTickOnShieldBlock()) {
+@@ -1556,6 +1561,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+ 
+             boolean fullyBlocked = blocked && damage <= 0.0F;
+             if (!source.is(DamageTypeTags.NO_KNOCKBACK) && !fullyBlocked) {
++                if (legacyThrownKnockback) this.legacyThrownKnockback(source); else // PracticePvP - 1.8 snowball / egg knockback
+                 this.dealDefaultKnockback(source, damage, blocked);
+             }
+         }
+@@ -2133,6 +2139,40 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         }
+     }
+ 
++    // PracticePvP start - 1.8 snowball / egg knockback
++    /**
++     * 1.8's knockback for a snowball or egg hit: away from the thrower (the projectile when nobody threw it),
++     * half the old speed plus 0.4 sideways and 0.4 up - also in the air, unlike modern knockback, which only
++     * lifts players on the ground - with the upward speed capped at 0.4.
++     */
++    public void legacyThrownKnockback(final DamageSource source) {
++        Entity from = source.getEntity() != null ? source.getEntity() : source.getDirectEntity();
++        if (from == null) return;
++        double power = 0.4 * (1.0 - this.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE));
++        double xd = from.getX() - this.getX();
++        double zd = from.getZ() - this.getZ();
++        while (xd * xd + zd * zd < 1.0E-4) {
++            xd = (Math.random() - Math.random()) * 0.01;
++            zd = (Math.random() - Math.random()) * 0.01;
++        }
++        double length = Math.sqrt(xd * xd + zd * zd);
++        Vec3 deltaMovement = this.getDeltaMovement();
++        Vec3 targetMovement = new Vec3(
++            deltaMovement.x / 2.0 - xd / length * power,
++            Math.min(0.4, deltaMovement.y / 2.0 + power),
++            deltaMovement.z / 2.0 - zd / length * power
++        );
++        Vec3 knockback = targetMovement.subtract(deltaMovement);
++        io.papermc.paper.event.entity.EntityKnockbackEvent event = CraftEventFactory.callEntityKnockbackEvent(this.getBukkitEntity(),
++            source.getDirectEntity(), source.getEntity(), io.papermc.paper.event.entity.EntityKnockbackEvent.Cause.ENTITY_ATTACK, power, knockback);
++        if (event.isCancelled()) {
++            return;
++        }
++        this.needsSync = true;
++        this.setDeltaMovement(deltaMovement.add(event.getKnockback().getX(), event.getKnockback().getY(), event.getKnockback().getZ()));
++    }
++    // PracticePvP end - 1.8 snowball / egg knockback
++
+     public void knockback(final double power, final double xd, final double zd, final DamageSource source, final float damage) {
+         // Paper start - knockback events
+         this.knockback(power, xd, zd, source, damage, null, io.papermc.paper.event.entity.EntityKnockbackEvent.Cause.UNKNOWN);

@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@localhost>
+Date: Thu, 19 Nov 2026 15:43:23 +0330
+Subject: [PATCH] Elytra wears every tick of gliding
+
+
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 3f1d284a39b7a165e64743d390a89f89385939d7..c77a2c4d38f397ae279d7fdf168e99f329327cd8 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -3889,47 +3889,18 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 return;
+             }
+ 
++            // PracticePvP - players' elytras wear every tick instead of once a second, so swapping them can't skip it
++            if (this instanceof net.minecraft.server.level.ServerPlayer && !this.hasInfiniteMaterials()) {
++                this.wearElytra();
++            }
++
+             int checkFallFlyTicks = this.fallFlyTicks + 1;
+             if (checkFallFlyTicks % 10 == 0) {
+                 int freeFallInterval = checkFallFlyTicks / 10;
+-                if (freeFallInterval % 2 == 0) {
++                if (freeFallInterval % 2 == 0 && !(this instanceof net.minecraft.server.level.ServerPlayer)) {
+                     List<EquipmentSlot> slotsWithGliders = EquipmentSlot.VALUES.stream().filter(slot -> canGlideUsing(this.getItemBySlot(slot), slot)).toList();
+                     EquipmentSlot slotToDamage = Util.getRandom(slotsWithGliders, this.random);
+-                    net.minecraft.world.item.ItemStack elytra = this.getItemBySlot(slotToDamage);
+-                    
+-                    // ASPAPER: Consistent Elytra Decay
+-                    // The plugin used to apply 0.05 damage per move event (~20 ticks/sec = 1 durability/sec).
+-                    // This block runs every 10 ticks (0.5 seconds), so we expect exactly 0.5 damage.
+-                    double expectedDamage = 0.5d;
+-
+-                    // Account for unbreaking
+-                    int unbreakingLevel = 0;
+-                    net.minecraft.world.item.enchantment.ItemEnchantments enchantments = elytra.getOrDefault(net.minecraft.core.component.DataComponents.ENCHANTMENTS, net.minecraft.world.item.enchantment.ItemEnchantments.EMPTY);
+-                    for (it.unimi.dsi.fastutil.objects.Object2IntMap.Entry<net.minecraft.core.Holder<net.minecraft.world.item.enchantment.Enchantment>> entry : enchantments.entrySet()) {
+-                        if (entry.getKey().is(net.minecraft.world.item.enchantment.Enchantments.UNBREAKING)) {
+-                            unbreakingLevel = entry.getIntValue();
+-                            break;
+-                        }
+-                    }
+-                    if (unbreakingLevel > 0) {
+-                        expectedDamage = expectedDamage * (1.0d / (unbreakingLevel + 1));
+-                    }
+-                    
+-                    net.minecraft.world.item.component.CustomData customData = elytra.getOrDefault(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.EMPTY);
+-                    double storedFrac = 0.0;
+-                    net.minecraft.nbt.CompoundTag tag = customData.copyTag();
+-                    if (tag.contains("FractionalDamage")) {
+-                        storedFrac = tag.getDoubleOr("FractionalDamage", 0.0);
+-                    }
+-                    
+-                    double newFrac = storedFrac + expectedDamage;
+-                    int intDmg = (int) newFrac;
+-                    tag.putDouble("FractionalDamage", newFrac - intDmg);
+-                    elytra.set(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.of(tag));
+-                    
+-                    if (intDmg > 0) {
+-                        elytra.hurtAndBreak(intDmg, this, slotToDamage);
+-                    }
++                    this.getItemBySlot(slotToDamage).hurtAndBreak(1, this, slotToDamage);
+                 }
+ 
+                 this.gameEvent(GameEvent.ELYTRA_GLIDE);
+@@ -3937,6 +3908,34 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         }
+     }
+ 
++    // PracticePvP start - elytra wear: 0.0125 durability per tick of gliding (a quarter of vanilla's 1 per second),
++    // divided by Unbreaking + 1. Counted in whole ticks on the player, so stopping the glide or swapping elytras
++    // doesn't reset it
++    private int elytraWearTicks;
++
++    private void wearElytra() {
++        List<EquipmentSlot> slotsWithGliders = EquipmentSlot.VALUES.stream().filter(slot -> canGlideUsing(this.getItemBySlot(slot), slot)).toList();
++        if (slotsWithGliders.isEmpty()) {
++            return;
++        }
++        EquipmentSlot slot = Util.getRandom(slotsWithGliders, this.random);
++        ItemStack elytra = this.getItemBySlot(slot);
++        int unbreaking = 0;
++        for (it.unimi.dsi.fastutil.objects.Object2IntMap.Entry<net.minecraft.core.Holder<net.minecraft.world.item.enchantment.Enchantment>> entry
++                : elytra.getOrDefault(DataComponents.ENCHANTMENTS, net.minecraft.world.item.enchantment.ItemEnchantments.EMPTY).entrySet()) {
++            if (entry.getKey().is(net.minecraft.world.item.enchantment.Enchantments.UNBREAKING)) {
++                unbreaking = entry.getIntValue();
++                break;
++            }
++        }
++        int ticksPerDurability = 80 * (unbreaking + 1);
++        if (++this.elytraWearTicks >= ticksPerDurability) {
++            this.elytraWearTicks -= ticksPerDurability;
++            elytra.hurtAndBreak(1, this, slot);
++        }
++    }
++    // PracticePvP end
++
+     protected boolean canGlide() {
+         if (!this.onGround() && !this.isPassenger() && !this.hasEffect(MobEffects.LEVITATION)) {
+             for (EquipmentSlot slot : EquipmentSlot.VALUES) {
+diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
+index 1b3dd97d7084787d21be216aa798234154bafdff..673310d9ac1d884e84bca682bcffd6637091f202 100644
+--- a/net/minecraft/world/item/ItemStack.java
++++ b/net/minecraft/world/item/ItemStack.java
+@@ -644,7 +644,8 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
+                     }
+                 }
+ 
+-                if (unbreakingLevel > 0) {
++                // PracticePvP - elytra wear already includes Unbreaking (LivingEntity#wearElytra)
++                if (unbreakingLevel > 0 && !this.has(DataComponents.GLIDER)) {
+                     String itemName = this.getItem().toString();
+                     boolean isArmor = itemName.endsWith("_helmet") || itemName.endsWith("_chestplate") || itemName.endsWith("_leggings") || itemName.endsWith("_boots");
+                     double expectedDamage = isArmor ? amount * (0.6d + 0.4d / (unbreakingLevel + 1)) : amount * (1.0d / (unbreakingLevel + 1));

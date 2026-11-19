@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@localhost>
+Date: Thu, 19 Nov 2026 17:28:46 +0330
+Subject: [PATCH] Forget damage history on world change
+
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 902ea178269470d27b2ace16157ce044f14a6a16..6ee3aa86b0af0870e222a0efdc976d224ed87ceb 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -1603,6 +1603,14 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         // player next falls; held across a world change it kept a whole unloaded arena world in memory
+         this.currentExplosionCause = null;
+         this.currentExplosionImpactPos = null;
++        // The same for damage: the last damage source, the combat tracker's entries and the last Bukkit damage event
++        // point at the projectile that hurt the player (a pearl, arrow, wind charge), which keeps the old world and all
++        // its chunks in memory until the player is hurt again
++        this.lastDamageSource = null;
++        this.combatTracker.entries.clear();
++        this.combatTracker.inCombat = false;
++        this.combatTracker.takingDamage = false;
++        this.getBukkitEntity().setLastDamageCause(null);
+         this.updatePracticeTabListing();
+         // PracticePvP end
+         this.connection.internalTeleport(PositionMoveRotation.of(transition), transition.relatives()); // CraftBukkit - use internal teleport without event
