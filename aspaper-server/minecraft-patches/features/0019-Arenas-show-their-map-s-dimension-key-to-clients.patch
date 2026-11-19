@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bot <bot@localhost>
+Date: Thu, 19 Nov 2026 21:44:15 +0330
+Subject: [PATCH] Arenas show their map's dimension key to clients
+
+
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 6ee3aa86b0af0870e222a0efdc976d224ed87ceb..8f92219194df598def829ca8a3162e811e419433 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -2911,10 +2911,39 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+         }
+     }
+ 
++    // PracticePvP start - arenas show their map's dimension key to clients. Every match plays in a new clone of the
++    // map (named <map>_<32 hex> by the plugin's ArenaManager), so clients and client mods that cache chunks per
++    // world (Bobby) saw a brand-new world every match. All arenas of one map now look like the world practice:<map>.
++    // The client only builds a new world when the key changes, so moving straight between two different arenas of
++    // the same map (next round, /spectate) alternates with practice:<map>_b. Only keys are kept, never the level.
++    private static final java.util.regex.Pattern PRACTICE_ARENA_NAME = java.util.regex.Pattern.compile("(.+)_[0-9a-f]{32}");
++    private @Nullable ResourceKey<Level> practiceLastRealDimension;
++    private @Nullable ResourceKey<Level> practiceLastShownDimension;
++
++    private ResourceKey<Level> practiceShownDimension(final ServerLevel level) {
++        ResourceKey<Level> real = level.dimension();
++        // Same world as last time (a respawn there): the same key, or the client would rebuild its world
++        if (real.equals(this.practiceLastRealDimension) && this.practiceLastShownDimension != null) {
++            return this.practiceLastShownDimension;
++        }
++        java.util.regex.Matcher arena = PRACTICE_ARENA_NAME.matcher(real.identifier().getPath());
++        ResourceKey<Level> shown = real;
++        if (arena.matches()) {
++            shown = ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, Identifier.fromNamespaceAndPath("practice", arena.group(1)));
++            if (shown.equals(this.practiceLastShownDimension)) {
++                shown = ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, Identifier.fromNamespaceAndPath("practice", arena.group(1) + "_b"));
++            }
++        }
++        this.practiceLastRealDimension = real;
++        this.practiceLastShownDimension = shown;
++        return shown;
++    }
++    // PracticePvP end
++
+     public CommonPlayerSpawnInfo createCommonSpawnInfo(final ServerLevel level) {
+         return new CommonPlayerSpawnInfo(
+             level.dimensionTypeRegistration(),
+-            level.dimension(),
++            this.practiceShownDimension(level), // PracticePvP - arenas show their map's dimension key
+             BiomeManager.obfuscateSeed(level.getSeed()),
+             this.gameMode.getGameModeForPlayer(),
+             Optional.ofNullable(this.gameMode.getPreviousGameModeForPlayer()),
