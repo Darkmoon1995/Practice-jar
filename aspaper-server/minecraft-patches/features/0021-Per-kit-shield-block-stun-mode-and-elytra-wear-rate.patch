@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Darkmoon1995 <darkmoonmasih@gmail.com>
+Date: Fri, 20 Nov 2026 14:51:11 +0330
+Subject: [PATCH] Per-kit shield block stun mode and elytra wear rate
+
+
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index d60e96ddcfb0f6feafe59846328c7a57c3aa65d3..d47c28521754236b97dab72d2c08cdaa662716d5 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -3970,6 +3970,8 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+     // divided by Unbreaking + 1. Counted in whole ticks on the player, so stopping the glide or swapping elytras
+     // doesn't reset it
+     private int elytraWearTicks;
++    /** Gliding ticks per durability point before Unbreaking; 0 = elytras don't wear. Set per kit by NewPracticePvP. */
++    public int practicePvPElytraTicksPerDurability = 80;
+ 
+     private void wearElytra() {
+         List<EquipmentSlot> slotsWithGliders = EquipmentSlot.VALUES.stream().filter(slot -> canGlideUsing(this.getItemBySlot(slot), slot)).toList();
+@@ -3986,7 +3988,8 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+                 break;
+             }
+         }
+-        int ticksPerDurability = 80 * (unbreaking + 1);
++        if (this.practicePvPElytraTicksPerDurability <= 0) return;
++        int ticksPerDurability = this.practicePvPElytraTicksPerDurability * (unbreaking + 1);
+         if (++this.elytraWearTicks >= ticksPerDurability) {
+             this.elytraWearTicks -= ticksPerDurability;
+             elytra.hurtAndBreak(1, this, slot);
+@@ -5176,8 +5179,12 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         return false;
+     }
+ 
++    /** Shield block damage tick, set per kit by NewPracticePvP: 0 = by armor (below), 1 = always skip, 2 = never skip. */
++    public int practicePvPShieldMode = 0;
++
+     // Vanilla damage tick on a shield block: skipped for diamond or netherite armor, otherwise per-player setting
+     private boolean practicePvPSkipDamageTickOnShieldBlock() {
++        if (this.practicePvPShieldMode != 0) return this.practicePvPShieldMode == 1;
+         if (this instanceof ServerPlayer player) {
+             return practicePvPWearsArmor(player, "diamond") || practicePvPWearsArmor(player, "netherite") || player.getBukkitEntity().isSkipVanillaDamageTickWhenShieldBlocked();
+         }
+@@ -5186,6 +5193,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+ 
+     // Paper's shield block patch: skipped for diamond armor, kept for netherite, otherwise per-player setting
+     private boolean practicePvPSkipDamageTickOnShieldBlockPaper() {
++        if (this.practicePvPShieldMode != 0) return this.practicePvPShieldMode == 1;
+         if (this instanceof ServerPlayer player) {
+             if (practicePvPWearsArmor(player, "diamond")) return true;
+             if (practicePvPWearsArmor(player, "netherite")) return false;
