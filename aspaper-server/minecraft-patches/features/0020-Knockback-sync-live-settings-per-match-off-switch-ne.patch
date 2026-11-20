@@ -1,0 +1,191 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Darkmoon1995 <darkmoonmasih@gmail.com>
+Date: Fri, 20 Nov 2026 10:25:43 +0330
+Subject: [PATCH] Knockback sync: live settings, per-match off switch, newest
+ ping sample, jump prediction
+
+
+diff --git a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+index 5dbb2849f32ac3418f8fdf76c04022d7e9dc165b..feb034ced42b684bd865f414842b4e4b52d098ea 100644
+--- a/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerCommonPacketListenerImpl.java
+@@ -45,6 +45,7 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+     private long closedListenerTime;
+     private boolean closed = false;
+     private volatile int latency; // Paper - improve keepalives - make volatile
++    public volatile int practicePvPLastPingMs = -1; // PracticePvP - KnockbackSync: the newest keepalive round trip
+     private final io.papermc.paper.util.KeepAlive keepAlive; // Paper - improve keepalives
+     private volatile boolean suspendFlushingOnServerThread = false;
+     // CraftBukkit start
+@@ -113,6 +114,7 @@ public abstract class ServerCommonPacketListenerImpl implements ServerCommonPack
+             this.keepAlive.pingCalculator5s.update(response);
+ 
+             this.latency = this.keepAlive.pingCalculator5s.getAvgLatencyMS();
++            this.practicePvPLastPingMs = (int) java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(response.latencyNS()); // PracticePvP - KnockbackSync
+             return;
+         }
+ 
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 742918541f3e90bbc4b16639953d14ee9ba278fb..6baa7d25fecca532dddaede607494d8117d3b5c9 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -1627,6 +1627,7 @@ public class ServerGamePacketListenerImpl
+ 
+                     if (event.callEvent()) {
+                         this.player.jumpFromGround();
++                        this.player.kbSyncJumpTick = this.player.tickCount; // PracticePvP - KnockbackSync
+                     } else {
+                         from = event.getFrom();
+                         this.internalTeleport(new PositionMoveRotation(org.bukkit.craftbukkit.util.CraftLocation.toVec3(from), Vec3.ZERO, from.getYaw(), from.getPitch()), Collections.emptySet());
+@@ -1762,6 +1763,7 @@ public class ServerGamePacketListenerImpl
+                         && this.noBlocksAround(this.player);
+                     this.player.level().getChunkSource().move(this.player);
+                     Vec3 clientDeltaMovement = new Vec3(this.player.getX() - startX, this.player.getY() - startY, this.player.getZ() - startZ);
++                    if (isOnGround && !this.player.onGround()) this.player.kbSyncLandedTick = this.player.tickCount; // PracticePvP - KnockbackSync
+                     this.player.setOnGroundWithMovement(isOnGround, horizontalCollision, clientDeltaMovement);
+                     this.player.doCheckFallDamage(clientDeltaMovement.x, clientDeltaMovement.y, clientDeltaMovement.z, isOnGround);
+                     this.handlePlayerKnownMovement(clientDeltaMovement);
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index a4472fc14d0f6492da07a708628a4e31046943e5..d60e96ddcfb0f6feafe59846328c7a57c3aa65d3 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -157,10 +157,18 @@ import org.bukkit.event.entity.EntityResurrectEvent;
+ public abstract class LivingEntity extends Entity implements Attackable, WaypointTransmitter {
+     private static final Logger LOGGER = LogUtils.getLogger();
+     // PracticePvP start - KnockbackSync
+-    public  static volatile boolean KB_SYNC_ENABLED        = true;
+-    private static final long   KB_SYNC_PING_OFFSET        = 25L;
+-    private static final long   KB_SYNC_SPIKE_THRESHOLD    = 20L;
+-    private static final double KB_SYNC_MAX_GROUND_DIST    = 1.3;
++    // Tuned live by NewPracticePvP (/kbsync); these are the defaults until it sets them
++    public  static volatile boolean KB_SYNC_ENABLED         = true;
++    /** Also predict players that already jumped again on their screen while the server still has them on the ground. */
++    public  static volatile boolean KB_SYNC_OFF_GROUND      = true;
++    public  static volatile long    KB_SYNC_PING_OFFSET     = 25L;
++    /** Newest ping sample more than this many ms above the 5 s average counts as a spike; the average is used then. */
++    public  static volatile long    KB_SYNC_SPIKE_THRESHOLD = 20L;
++    public  static volatile double  KB_SYNC_MAX_GROUND_DIST = 1.3;
++    /** A landing counts as the end of a hop when that jump was in the air at most this many ticks. */
++    private static final int    KB_SYNC_MAX_HOP_TICKS      = 14;
++    /** Players with this tag in their data get vanilla knockback (set per match by NewPracticePvP). */
++    private static final org.bukkit.NamespacedKey KB_SYNC_OFF_KEY = new org.bukkit.NamespacedKey("practicepvp", "kbsync_off");
+     private static final int    KB_SYNC_MAX_FALL_TICKS     = 20;
+     private static final double KB_SYNC_TERMINAL_VELOCITY  = 3.92;
+     private static final double KB_SYNC_VELOCITY_MULT      = 0.98;
+@@ -295,8 +303,9 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+     protected @Nullable Object2LongMap<Entity> recentKineticEnemies;
+     private float swimAmount;
+     // PracticePvP start - KnockbackSync: per-entity ping snapshot (meaningful only on ServerPlayer instances)
+-    private transient long kbSyncPingMs     = -1L;
+-    private transient long kbSyncPrevPingMs = -1L;
++    /** Server ticks of this player's last jump and last landing, from their movement packets. */
++    public transient int kbSyncJumpTick    = -1;
++    public transient int kbSyncLandedTick  = -1;
+     // PracticePvP end - KnockbackSync
+     private float swimAmountO;
+     protected Brain<?> brain;
+@@ -2116,14 +2125,23 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+             Vec3 deltaVector = new Vec3(xd, 0.0, zd).normalize().scale(power);
+             // PracticePvP start - KnockbackSync: use the on-ground Y formula when the victim is on the ground client-side
+             boolean onGround = this.onGround();
+-            if (!onGround && KB_SYNC_ENABLED && this instanceof ServerPlayer victim && attacker instanceof ServerPlayer) {
+-                this.kbSyncCapturePing();
+-                onGround = this.kbSyncIsOnGroundClientSide(victim, deltaMovement.y);
++            double airborneY = deltaMovement.y;
++            if (KB_SYNC_ENABLED && this instanceof ServerPlayer victim && attacker instanceof ServerPlayer && this.kbSyncOn(victim)) {
++                long ping = this.kbSyncGetEstimatedPing(victim);
++                if (!onGround) {
++                    onGround = this.kbSyncIsOnGroundClientSide(victim, deltaMovement.y, ping);
++                } else if (KB_SYNC_OFF_GROUND) {
++                    double predicted = this.kbSyncOffGroundVelocity(victim, ping);
++                    if (!Double.isNaN(predicted)) {
++                        onGround = false;
++                        airborneY = predicted;
++                    }
++                }
+             }
+             // PracticePvP end - KnockbackSync
+             Vec3 targetMovement = new Vec3( // Paper - knockback events
+                 deltaMovement.x / 2.0 - deltaVector.x,
+-                onGround ? Math.min(0.4, deltaMovement.y / 2.0 + power) : deltaMovement.y, // PracticePvP - KnockbackSync
++                onGround ? Math.min(0.4, deltaMovement.y / 2.0 + power) : airborneY, // PracticePvP - KnockbackSync
+                 deltaMovement.z / 2.0 - deltaVector.z
+             );
+             // Paper start - knockback events
+@@ -5178,23 +5196,18 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+     // PracticePvP end - shield stun
+ 
+     // PracticePvP start - KnockbackSync helpers
+-    /**
+-     * Snapshots the current latency of this player for the next ground check.
+-     */
+-    public void kbSyncCapturePing() {
+-        if (!(this instanceof ServerPlayer sp)) return;
+-        long raw = sp.connection.latency();
+-        this.kbSyncPrevPingMs = (this.kbSyncPingMs >= 0) ? this.kbSyncPingMs : raw;
+-        this.kbSyncPingMs = raw;
++    /** Knockback sync is on for this player unless their match turned it off. */
++    private boolean kbSyncOn(final ServerPlayer victim) {
++        return !victim.getBukkitEntity().getPersistentDataContainer().has(KB_SYNC_OFF_KEY);
+     }
+ 
+     /**
+-     * Ping with a constant offset, ignoring sudden spikes over the previous sample.
++     * The newest ping sample, or the 5 s average when the newest one is a spike over it; minus a constant offset.
+      */
+     private long kbSyncGetEstimatedPing(final ServerPlayer victim) {
+-        long current = (this.kbSyncPingMs >= 0) ? this.kbSyncPingMs : (long) victim.connection.latency();
+-        long previous = (this.kbSyncPrevPingMs >= 0) ? this.kbSyncPrevPingMs : current;
+-        long ping = ((current - previous) > KB_SYNC_SPIKE_THRESHOLD) ? previous : current;
++        long average = victim.connection.latency();
++        long newest = victim.connection.practicePvPLastPingMs;
++        long ping = newest < 0 || newest - average > KB_SYNC_SPIKE_THRESHOLD ? average : newest;
+         return Math.max(1L, ping - KB_SYNC_PING_OFFSET);
+     }
+ 
+@@ -5270,12 +5283,11 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+      * @param victim the player receiving knockback
+      * @param serverYVelocity the server-side Y velocity, used when the client velocity is unknown
+      */
+-    private boolean kbSyncIsOnGroundClientSide(final ServerPlayer victim, final double serverYVelocity) {
++    private boolean kbSyncIsOnGroundClientSide(final ServerPlayer victim, final double serverYVelocity, final long estimatedPing) {
+         if (victim.onGround()) return false;
+         if (victim.isFallFlying()) return false;
+         if (victim.isInWater() || victim.isInLava()) return false;
+ 
+-        long estimatedPing = this.kbSyncGetEstimatedPing(victim);
+         double gDist = this.kbSyncGetDistanceToGround(victim);
+         if (gDist <= 0.0 || gDist > KB_SYNC_MAX_GROUND_DIST) return false;
+ 
+@@ -5297,5 +5309,31 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         // Both are ticks, 50ms each
+         return estimatedPing >= (tRise + tFall) * 50L;
+     }
++
++    /**
++     * The reverse case: the server still has {@code victim} on the ground, but they were hopping (sprint-jumping,
++     * jump-resetting) and on their screen have already jumped again by the time the knockback arrives. Returns their
++     * predicted upward speed at that moment, or NaN when they're on the ground there too.
++     *
++     * <p>Hopping means the landing the server saw ended a normal jump. Players jump again the tick they land, so on
++     * their screen they're airborne from one tick after landing; the knockback reaches them a full ping after the
++     * moment the server is looking at.
++     */
++    private double kbSyncOffGroundVelocity(final ServerPlayer victim, final long estimatedPing) {
++        if (victim.isFallFlying() || victim.isInWater() || victim.isInLava()) return Double.NaN;
++        int jump = victim.kbSyncJumpTick, landed = victim.kbSyncLandedTick;
++        if (jump < 0 || landed < jump) return Double.NaN;
++        if (landed - jump > KB_SYNC_MAX_HOP_TICKS) return Double.NaN; // landed from a fall, not a hop
++        int sinceLanding = victim.tickCount - landed;
++        if (sinceLanding < 0 || sinceLanding > KB_SYNC_MAX_FALL_TICKS) return Double.NaN;
++
++        long airborneMs = estimatedPing - (sinceLanding + 1) * 50L;
++        if (airborneMs <= 0) return Double.NaN;
++        // Their new jump's speed after the ticks it has been going
++        double velocity = victim.getJumpPower();
++        double gravity = victim.getGravity();
++        for (long t = airborneMs / 50L; t > 0; t--) velocity = (velocity - gravity) * KB_SYNC_VELOCITY_MULT;
++        return velocity;
++    }
+     // PracticePvP end - KnockbackSync helpers
+ }
