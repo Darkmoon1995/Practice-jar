@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Darkmoon1995 <darkmoonmasih@gmail.com>
+Date: Sat, 21 Nov 2026 08:16:11 +0330
+Subject: [PATCH] Bring back weather: the weather cycle (rain shows again,
+ /weather works) and lightning in thunderstorms
+
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 54dcfb76656ac0fb7a2f3665700b7148027f9df1..f30c61bb4a497a8403f32b279bb0c979bce0aad8 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1096,7 +1096,6 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     }
+ 
+     public void tickThunder(final LevelChunk chunk) {
+-        if (true) return; // PracticePvP - disable thunder entirely
+         ChunkPos chunkPos = chunk.getPos();
+         boolean raining = this.isRaining();
+         int minX = chunkPos.getMinBlockX();
+@@ -1274,7 +1273,112 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     }
+ 
+     private void advanceWeatherCycle() {
+-        return; // PracticePvP: Disable weather entirely
++        boolean wasRaining = this.isRaining();
++        if (this.canHaveWeather()) {
++            WeatherData weatherData = this.getWeatherData();
++            if (this.getGameRules().get(GameRules.ADVANCE_WEATHER)) {
++                int clearWeatherTime = weatherData.getClearWeatherTime();
++                int thunderTime = weatherData.getThunderTime();
++                int rainTime = weatherData.getRainTime();
++                boolean thundering = weatherData.isThundering();
++                boolean raining = weatherData.isRaining();
++                if (clearWeatherTime > 0) {
++                    clearWeatherTime--;
++                    thunderTime = thundering ? 0 : 1;
++                    rainTime = raining ? 0 : 1;
++                    thundering = false;
++                    raining = false;
++                } else {
++                    if (thunderTime > 0) {
++                        if (--thunderTime == 0) {
++                            thundering = !thundering;
++                        }
++                    } else if (thundering) {
++                        thunderTime = THUNDER_DURATION.sample(this.random);
++                    } else {
++                        thunderTime = THUNDER_DELAY.sample(this.random);
++                    }
++
++                    if (rainTime > 0) {
++                        if (--rainTime == 0) {
++                            raining = !raining;
++                        }
++                    } else if (raining) {
++                        rainTime = RAIN_DURATION.sample(this.random);
++                    } else {
++                        rainTime = RAIN_DELAY.sample(this.random);
++                    }
++                }
++
++                weatherData.setThunderTime(thunderTime);
++                weatherData.setRainTime(rainTime);
++                weatherData.setClearWeatherTime(clearWeatherTime);
++                weatherData.setThundering(thundering, org.bukkit.event.weather.ThunderChangeEvent.Cause.NATURAL); // Paper - Add cause to Weather/ThunderChangeEvents
++                weatherData.setRaining(raining, org.bukkit.event.weather.WeatherChangeEvent.Cause.NATURAL); // Paper - Add cause to Weather/ThunderChangeEvents
++            }
++
++            this.oThunderLevel = this.thunderLevel;
++            if (weatherData.isThundering()) {
++                this.thunderLevel += 0.01F;
++            } else {
++                this.thunderLevel -= 0.01F;
++            }
++
++            this.thunderLevel = Mth.clamp(this.thunderLevel, 0.0F, 1.0F);
++            this.oRainLevel = this.rainLevel;
++            if (weatherData.isRaining()) {
++                this.rainLevel += 0.01F;
++            } else {
++                this.rainLevel -= 0.01F;
++            }
++
++            this.rainLevel = Mth.clamp(this.rainLevel, 0.0F, 1.0F);
++        }
++
++        /* CraftBukkit start
++        if (this.oRainLevel != this.rainLevel) {
++            this.server
++                .getPlayerList()
++                .broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, this.rainLevel), this.dimension());
++        }
++
++        if (this.oThunderLevel != this.thunderLevel) {
++            this.server
++                .getPlayerList()
++                .broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, this.thunderLevel), this.dimension());
++        }
++
++        if (wasRaining != this.isRaining()) {
++            if (wasRaining) {
++                this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.STOP_RAINING, 0.0F));
++            } else {
++                this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.START_RAINING, 0.0F));
++            }
++
++            this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.RAIN_LEVEL_CHANGE, this.rainLevel));
++            this.server.getPlayerList().broadcastAll(new ClientboundGameEventPacket(ClientboundGameEventPacket.THUNDER_LEVEL_CHANGE, this.thunderLevel));
++        }
++        */
++        for (ServerPlayer player : this.players) {
++            if (player.level() == this) {
++                player.tickWeather();
++            }
++        }
++
++        if (wasRaining != this.isRaining()) {
++            // Only send weather packets to those affected
++            for (ServerPlayer player : this.players) {
++                if (player.level() == this) {
++                    player.setPlayerWeather((!wasRaining ? org.bukkit.WeatherType.DOWNFALL : org.bukkit.WeatherType.CLEAR), false);
++                }
++            }
++        }
++        for (ServerPlayer player : this.players) {
++            if (player.level() == this) {
++                player.updateWeather(this.oRainLevel, this.rainLevel, this.oThunderLevel, this.thunderLevel);
++            }
++        }
++        // CraftBukkit end
+     }
+ 
+     @VisibleForTesting
